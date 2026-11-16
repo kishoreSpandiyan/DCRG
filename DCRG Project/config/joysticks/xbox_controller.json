@@ -1,0 +1,78 @@
+{
+  "profile_name": "Xbox Standard Gamepad",
+  "vendor_id": "045e",
+  "product_id": "02ea",
+  "axis_mapping": {
+    "x": {
+      "index": 0,
+      "inverted": false,
+      "deadzone": 0.10,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "y": {
+      "index": 1,
+      "inverted": true,
+      "deadzone": 0.10,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "right_x": {
+      "index": 2,
+      "inverted": false,
+      "deadzone": 0.10,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "right_y": {
+      "index": 3,
+      "inverted": true,
+      "deadzone": 0.10,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "left_trigger": {
+      "index": 4,
+      "inverted": false,
+      "deadzone": 0.05,
+      "center": -1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "right_trigger": {
+      "index": 5,
+      "inverted": false,
+      "deadzone": 0.05,
+      "center": -1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    }
+  },
+  "button_mapping": {
+    "btn_a": 0,
+    "btn_b": 1,
+    "btn_x": 2,
+    "btn_y": 3,
+    "bumper_left": 4,
+    "bumper_right": 5,
+    "back": 6,
+    "start": 7,
+    "thumb_left": 8,
+    "thumb_right": 9
+  },
+  "hat_mapping": {
+    "dpad": 0
+  },
+  "radial_deadzone": 0.10
+}
+

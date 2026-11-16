@@ -1,0 +1,62 @@
+{
+  "profile_name": "Logitech Extreme 3D Pro",
+  "vendor_id": "046d",
+  "product_id": "c215",
+  "axis_mapping": {
+    "x": {
+      "index": 0,
+      "inverted": false,
+      "deadzone": 0.08,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "y": {
+      "index": 1,
+      "inverted": true,
+      "deadzone": 0.08,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "twist_z": {
+      "index": 2,
+      "inverted": false,
+      "deadzone": 0.12,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "throttle": {
+      "index": 3,
+      "inverted": true,
+      "deadzone": 0.02,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    }
+  },
+  "button_mapping": {
+    "trigger": 0,
+    "thumb_secondary": 1,
+    "top_button_3": 2,
+    "top_button_4": 3,
+    "top_button_5": 4,
+    "top_button_6": 5,
+    "base_button_7": 6,
+    "base_button_8": 7,
+    "base_button_9": 8,
+    "base_button_10": 9,
+    "base_button_11": 10,
+    "estop_base_12": 11
+  },
+  "hat_mapping": {
+    "pov_hat": 0
+  },
+  "radial_deadzone": 0.08
+}
+

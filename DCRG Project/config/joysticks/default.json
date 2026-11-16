@@ -1,0 +1,54 @@
+{
+  "profile_name": "Generic Dual-Axis Gamepad",
+  "vendor_id": "generic",
+  "product_id": "default",
+  "axis_mapping": {
+    "x": {
+      "index": 0,
+      "inverted": false,
+      "deadzone": 0.08,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "y": {
+      "index": 1,
+      "inverted": true,
+      "deadzone": 0.08,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "twist_z": {
+      "index": 2,
+      "inverted": false,
+      "deadzone": 0.12,
+      "center": 0.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    },
+    "throttle": {
+      "index": 3,
+      "inverted": false,
+      "deadzone": 0.02,
+      "center": -1.0,
+      "min": -1.0,
+      "max": 1.0,
+      "sensitivity": 1.0
+    }
+  },
+  "button_mapping": {
+    "primary_fire": 0,
+    "secondary_action": 1,
+    "mode_toggle": 2,
+    "emergency_stop": 3
+  },
+  "hat_mapping": {
+    "primary_pov": 0
+  },
+  "radial_deadzone": 0.08
+}
+
