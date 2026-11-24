@@ -111,7 +111,7 @@ class FusionConfig(BaseModel):
     weight_context: float = Field(0.15, ge=0.0, le=1.0, description="Weight W_c for context consistency")
     stress_damping: float = Field(0.25, ge=0.0, le=1.0, description="Stress damping coefficient beta")
     contradiction_cap: float = Field(30.0, ge=0.0, le=100.0, description="Maximum CRS ceiling when contradiction occurs")
-    contradiction_whisper_min: float = Field(0.70, ge=0.0, le=1.0, description="Min voice confidence to trigger veto")
+    contradiction_whisper_min: float = Field(0.60, ge=0.0, le=1.0, description="Min voice confidence to trigger veto")
     contradiction_joystick_min: float = Field(0.30, ge=0.0, le=1.0, description="Min stick intensity to trigger veto")
     joystick_deadzone: float = Field(0.08, ge=0.0, le=0.5, description="Radial joystick deadzone threshold")
     scoring_config_version: str = Field("v1.0-prototype", description="Calibration tag")

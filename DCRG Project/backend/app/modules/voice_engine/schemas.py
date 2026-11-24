@@ -159,4 +159,8 @@ class VoiceSystemStatus(BaseModel):
     sample_rate: int = Field(default=16000)
     last_event: Optional[VoiceEvent] = None
     error_message: Optional[str] = None
+    kws_active: bool = Field(default=True)
+    kws_total_detections: int = Field(default=0)
+    kws_emergency_triggers: int = Field(default=0)
+    ambient_noise_rms: float = Field(default=0.005)
 

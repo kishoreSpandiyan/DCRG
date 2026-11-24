@@ -38,6 +38,7 @@ class FusionManager:
         self._max_history = 100
         self._subscribers: List[Callable[[FusionResult], None]] = []
         self._is_active = True
+        self._latest_command_result: Optional[FusionResult] = None
 
         # Aggregate runtime counters
         self._total_evaluations = 0
@@ -90,8 +91,25 @@ class FusionManager:
         """
         Callback invoked whenever Phase 4 sync engine produces a CorrelatedEvent.
         Computes CRS and records result into history.
+        Filters out background idle STALE ticks to protect active command evaluations from being overwritten by 7.5.
         """
         if not self._is_active:
+            return None
+
+        # Filter out background idle sweeper noise that has no voice and neutral joystick
+        is_stale_or_invalid = event.synchronization_status in (
+            SynchronizationStatus.STALE,
+            SynchronizationStatus.INVALID_TIMESTAMP,
+            SynchronizationStatus.DUPLICATE,
+        )
+
+        is_idle_sweep = (
+            is_stale_or_invalid
+            and not event.voice_available
+            and (event.joystick_intensity is None or event.joystick_intensity < 0.10)
+        )
+        if is_idle_sweep and self._latest_command_result is not None:
+            # Do not overwrite established command evaluation with background idle noise
             return None
 
         result = self.calculator.evaluate(event)
@@ -108,7 +126,19 @@ class FusionManager:
             if result.contradiction_detected:
                 self._total_contradictions += 1
 
-        self._dispatch(result)
+            # Retain authoritative command evaluation (actionable voice, active stick, or contradiction)
+            # Stale/expired buffer drops must NEVER overwrite an active command evaluation
+            if not is_stale_or_invalid and (
+                event.voice_available
+                or (event.joystick_intensity is not None and event.joystick_intensity >= 0.10)
+                or result.contradiction_detected
+            ):
+                self._latest_command_result = result
+
+        # Only dispatch to safety engine and websocket clients if NOT a background stale buffer drop
+        # when an active command evaluation is already present
+        if not (is_stale_or_invalid and self._latest_command_result is not None):
+            self._dispatch(result)
         return result
 
     def evaluate_manual_bundle(
@@ -194,8 +224,13 @@ class FusionManager:
         return self.process_correlated_event(correlated)
 
     def get_latest(self) -> Optional[FusionResult]:
-        """Returns the most recent fusion evaluation result."""
+        """Returns the most recent actionable fusion evaluation result."""
         with self._lock:
+            if self._latest_command_result is not None:
+                return self._latest_command_result
+            for res in reversed(self._history):
+                if res.synchronization_status not in ("STALE", "INVALID_TIMESTAMP"):
+                    return res
             return self._history[-1] if self._history else None
 
     def get_history(self, limit: int = 50) -> List[FusionResult]:
@@ -220,7 +255,7 @@ class FusionManager:
         """Returns telemetry status metrics."""
         with self._lock:
             avg_crs = (self._crs_sum / self._total_evaluations) if self._total_evaluations > 0 else 0.0
-            last_res = self._history[-1] if self._history else None
+            last_res = self._latest_command_result or (self._history[-1] if self._history else None)
             return FusionEngineStatus(
                 is_active=self._is_active,
                 total_evaluations=self._total_evaluations,
@@ -241,6 +276,7 @@ class FusionManager:
         """Clears history and performance counters (primarily for test isolation)."""
         with self._lock:
             self._history.clear()
+            self._latest_command_result = None
             self._total_evaluations = 0
             self._total_agreements = 0
             self._total_contradictions = 0

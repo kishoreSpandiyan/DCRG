@@ -257,14 +257,18 @@ export const FusionDashboardPanel: React.FC = () => {
                 )}`}
               >
                 <div className="text-5xl font-black font-mono tracking-tight">
-                  {latestFusion ? latestFusion.CRS.toFixed(1) : '--'}
+                  {latestFusion ? latestFusion.CRS.toFixed(1) : '0.0'}
                 </div>
                 <div className="text-xs font-semibold uppercase tracking-widest mt-1 opacity-80">
                   / 100.0 CRS
                 </div>
-                {latestFusion?.recommended_state && (
+                {latestFusion?.recommended_state ? (
                   <div className="mt-2 text-[11px] font-mono font-bold px-2.5 py-0.5 rounded bg-black/40 border border-current">
                     TARGET: {latestFusion.recommended_state}
+                  </div>
+                ) : (
+                  <div className="mt-2 text-[11px] font-mono font-bold px-2.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400">
+                    AWAITING INPUT
                   </div>
                 )}
               </div>

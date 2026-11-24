@@ -231,6 +231,60 @@ export async function fetchLatestVoiceEvent(): Promise<VoiceEvent | null> {
   }
 }
 
+export interface PredefinedSampleItem {
+  id: string;
+  filename: string;
+  command: string;
+  label: string;
+  description: string;
+  url: string;
+}
+
+export async function fetchPredefinedSamples(): Promise<PredefinedSampleItem[]> {
+  try {
+    const res = await fetch(`${API_BASE}/voice/samples`);
+    if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+    return await res.json();
+  } catch {
+    return [
+      { id: 'forward', filename: 'forward.wav', command: 'FORWARD', label: 'Move Forward', description: 'Drone move forward', url: '/samples/forward.wav' },
+      { id: 'backward', filename: 'backward.wav', command: 'BACKWARD', label: 'Move Backward', description: 'Drone move backward', url: '/samples/backward.wav' },
+      { id: 'left', filename: 'left.wav', command: 'LEFT', label: 'Move Left', description: 'Drone move left', url: '/samples/left.wav' },
+      { id: 'right', filename: 'right.wav', command: 'RIGHT', label: 'Turn Right', description: 'Drone turn right', url: '/samples/right.wav' },
+      { id: 'stop', filename: 'stop.wav', command: 'STOP', label: 'Stop Drone', description: 'Drone stop', url: '/samples/stop.wav' },
+      { id: 'emergency_stop', filename: 'emergency_stop.wav', command: 'EMERGENCY_STOP', label: 'Emergency Stop', description: 'Emergency stop', url: '/samples/emergency_stop.wav' },
+    ];
+  }
+}
+
+export async function playPredefinedSample(sampleId: string): Promise<VoiceEvent> {
+  const res = await fetch(`${API_BASE}/voice/samples/${encodeURIComponent(sampleId)}/play`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({ detail: 'Failed to play sample' }));
+    throw new Error(errData.detail || 'Sample execution failed');
+  }
+  return await res.json();
+}
+
+export async function uploadAudioFileBase64(filename: string, base64Data: string): Promise<VoiceEvent> {
+  const res = await fetch(`${API_BASE}/voice/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      filename,
+      audio_base64: base64Data,
+      operator_id: 'OP-UPLOAD',
+    }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({ detail: 'Failed to upload audio' }));
+    throw new Error(errData.detail || 'Audio upload failed');
+  }
+  return await res.json();
+}
+
 // ==========================================
 // Phase 4 Event Synchronization API
 // ==========================================
@@ -552,7 +606,7 @@ export async function fetchExecutionLogs(limit: number = 50): Promise<CommandExe
 }
 
 export async function controlSimulation(
-  action: 'START' | 'PAUSE' | 'RESUME' | 'RESET' | 'SET_SPEED',
+  action: 'START' | 'PAUSE' | 'RESUME' | 'RESET' | 'SET_SPEED' | 'FORWARD' | 'BACKWARD' | 'LEFT' | 'RIGHT' | 'STOP',
   speed_multiplier?: number,
   reset_x?: number,
   reset_y?: number
@@ -567,6 +621,12 @@ export async function controlSimulation(
     throw new Error(err.detail || 'Control failed');
   }
   return await res.json();
+}
+
+export async function sendSimCommand(
+  cmd: 'FORWARD' | 'BACKWARD' | 'LEFT' | 'RIGHT' | 'STOP'
+): Promise<SimulationState> {
+  return await controlSimulation(cmd);
 }
 
 export async function resetSimulationPose(

@@ -179,14 +179,19 @@ class WhisperService:
         t_start = time.time()
         try:
             with self._model_lock:
-                # beam_size=1 (greedy search) for ultra low latency
+                # beam_size=1 (greedy search) and bounded token decoding for ultra low latency
                 segments_iter, info = self._model.transcribe(
                     audio,
                     beam_size=1,
+                    best_of=1,
                     language=lang if lang != "auto" else None,
                     initial_prompt=prompt,
                     vad_filter=False,
                     word_timestamps=False,
+                    without_timestamps=True,
+                    condition_on_previous_text=False,
+                    temperature=0.0,
+                    max_new_tokens=12,
                 )
                 segment_list = list(segments_iter)
 

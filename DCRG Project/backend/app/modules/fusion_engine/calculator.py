@@ -166,7 +166,12 @@ class CRSCalculator:
         if status == SynchronizationStatus.SYNCHRONIZED:
             delta_t = event.timestamp_difference_ms if event.timestamp_difference_ms is not None else 0.0
             tau_sync = max(1.0, settings.SYNC_WINDOW_MS)
-            decay = max(0.0, 1.0 - (abs(delta_t) / tau_sync))
+            if delta_t <= tau_sync:
+                decay = max(0.0, 1.0 - (abs(delta_t) / tau_sync))
+            else:
+                # Active multimodal deflection beyond strict boundary decays smoothly over max_event_age
+                max_age = max(1.0, getattr(settings, "SYNC_MAX_EVENT_AGE_MS", 2500.0))
+                decay = max(0.20, 0.70 * (1.0 - (abs(delta_t) / max_age)))
             return round(min(1.0, max(0.0, decay)), 4)
         elif status in (SynchronizationStatus.VOICE_ONLY, SynchronizationStatus.JOYSTICK_ONLY):
             return 0.5

@@ -3,6 +3,7 @@
  * Comprehensive visualization of Physical USB/Bluetooth hardware,
  * Browser Gamepad API (Mobile / Xbox controller support),
  * mode switching, real-time virtual joystick, and live telemetry log.
+ * Enhanced with Cross-Modal Speech-Motor Contradiction Testing & Real-Time CRS Integration.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -19,18 +20,30 @@ import {
   ShieldAlert,
   Smartphone,
   RefreshCw,
+  Zap,
+  Volume2,
+  Activity,
+  ArrowRight,
+  RotateCcw,
 } from 'lucide-react';
 import { VirtualJoystick } from './VirtualJoystick';
 import { useJoystickStream } from '../hooks/useJoystickStream';
 import { useGamepad } from '../hooks/useGamepad';
-import { fetchJoystickStatus, rescanJoysticks, setJoystickMode } from '../services/api';
+import { useVoiceStream } from '../hooks/useVoiceStream';
+import { useFusionStream } from '../hooks/useFusionStream';
+import {
+  fetchJoystickStatus,
+  rescanJoysticks,
+  setJoystickMode,
+  playPredefinedSample,
+} from '../services/api';
 import type { JoystickMode, JoystickSystemStatus } from '../types';
 
 export const JoystickDashboardPanel: React.FC = () => {
   const {
     isConnected: isWsConnected,
     status: wsStatus,
-    lastEvent,
+    lastEvent: lastJoyEvent,
     eventHistory,
     sendVirtualInput,
     sendHardwareInput,
@@ -38,9 +51,14 @@ export const JoystickDashboardPanel: React.FC = () => {
     error: wsError,
   } = useJoystickStream();
 
+  const { lastEvent: lastVoiceEvent } = useVoiceStream();
+  const { latestFusion } = useFusionStream();
+
   const [pollStatus, setPollStatus] = useState<JoystickSystemStatus | null>(null);
   const [activeTab, setActiveTab] = useState<'CONTROLS' | 'HISTORY'>('CONTROLS');
   const [isRescanning, setIsRescanning] = useState(false);
+  const [testActionLoading, setTestActionLoading] = useState<string | null>(null);
+  const [testResultFeedback, setTestResultFeedback] = useState<string | null>(null);
 
   const status = wsStatus || pollStatus;
   const activeMode: JoystickMode = status?.active_mode || 'VIRTUAL_SIMULATION';
@@ -88,6 +106,47 @@ export const JoystickDashboardPanel: React.FC = () => {
     }
   };
 
+  // Cross-Modal Automated Demonstration Handler
+  const handleRunCrossModalTest = async (
+    testId: string,
+    joyX: number,
+    joyY: number,
+    voiceSampleId: string,
+    expectedDesc: string
+  ) => {
+    setTestActionLoading(testId);
+    setTestResultFeedback(`Executing: Setting Joystick (X:${joyX}, Y:${joyY}) + Playing Voice '${voiceSampleId}'...`);
+    try {
+      // 1. Immediately inject the joystick telemetry vector
+      sendVirtualInput(joyX, joyY, [false, false, false, false]);
+
+      // 2. Play the predefined audio file in browser for audible feedback
+      try {
+        const audio = new Audio(`/samples/${voiceSampleId}.wav`);
+        audio.play().catch(() => {});
+      } catch {
+        // Audio playback fallback ignored
+      }
+
+      // 3. Trigger backend voice ingestion endpoint
+      await playPredefinedSample(voiceSampleId);
+
+      // 4. Send updated joystick deflection frame so temporal synchrony delta is near-zero
+      sendVirtualInput(joyX, joyY, [false, false, false, false]);
+
+      setTestResultFeedback(`Success! ${expectedDesc}`);
+    } catch (err: any) {
+      setTestResultFeedback(`Execution note: ${err.message}`);
+    } finally {
+      setTestActionLoading(null);
+    }
+  };
+
+  // Evaluate contradiction state for the banner
+  const isContradiction = latestFusion?.contradiction_detected ?? false;
+  const crsScore = latestFusion?.CRS ?? null;
+  const finding = latestFusion?.analytical_finding;
+
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl text-left space-y-6">
       {/* Header & Mode Selector */}
@@ -101,7 +160,7 @@ export const JoystickDashboardPanel: React.FC = () => {
               Actuator Subsystem
             </h2>
             <p className="text-xs text-slate-400 m-0">
-              Physical USB/Bluetooth Gamepads, Mobile/Browser Gamepads & Virtual Canvas Simulator
+              Physical USB/Bluetooth Gamepads, Mobile/Browser Gamepads & Interactive Virtual Joystick
             </p>
           </div>
         </div>
@@ -112,10 +171,11 @@ export const JoystickDashboardPanel: React.FC = () => {
           <button
             type="button"
             onClick={handleModeToggle}
-            className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-mono font-bold transition ${activeMode === 'REAL_HARDWARE'
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-mono font-bold transition ${
+              activeMode === 'REAL_HARDWARE'
                 ? 'bg-emerald-950 text-emerald-400 border border-emerald-600'
                 : 'bg-amber-950 text-amber-300 border border-amber-600'
-              }`}
+            }`}
           >
             {activeMode === 'REAL_HARDWARE' ? (
               <>
@@ -129,6 +189,110 @@ export const JoystickDashboardPanel: React.FC = () => {
               </>
             )}
           </button>
+        </div>
+      </div>
+
+      {/* Cross-Modal Speech-Motor Contradiction & CRS Status Banner */}
+      <div
+        className={`p-4 rounded-xl border transition-all ${
+          isContradiction
+            ? 'bg-rose-950/50 border-rose-600/80 shadow-lg shadow-rose-950/40'
+            : finding === 'AGREEMENT'
+            ? 'bg-emerald-950/40 border-emerald-600/70'
+            : 'bg-slate-950 border-slate-800'
+        }`}
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center space-x-3">
+            <div
+              className={`p-2 rounded-lg ${
+                isContradiction
+                  ? 'bg-rose-900/60 text-rose-300 animate-pulse'
+                  : finding === 'AGREEMENT'
+                  ? 'bg-emerald-900/60 text-emerald-300'
+                  : 'bg-slate-800 text-slate-400'
+              }`}
+            >
+              {isContradiction ? (
+                <ShieldAlert className="w-5 h-5 text-rose-400" />
+              ) : finding === 'AGREEMENT' ? (
+                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+              ) : (
+                <Activity className="w-5 h-5 text-cyan-400" />
+              )}
+            </div>
+
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs font-mono uppercase tracking-wider text-slate-400">
+                  Cross-Modal Speech-Motor Status:
+                </span>
+                {isContradiction ? (
+                  <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-rose-600 text-white animate-pulse">
+                    CONTRADICTION VETO ASSERTED
+                  </span>
+                ) : finding === 'AGREEMENT' ? (
+                  <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-600 text-white">
+                    MULTIMODAL AGREEMENT
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-slate-800 text-slate-300">
+                    {finding || 'AWAITING PAIR'}
+                  </span>
+                )}
+              </div>
+
+              <div className="text-sm font-mono mt-1 text-slate-200 flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span>
+                  Joystick:{' '}
+                  <strong className="text-cyan-400">
+                    {lastJoyEvent?.direction || 'CENTER'}
+                  </strong>{' '}
+                  ({lastJoyEvent ? `${(lastJoyEvent.intensity * 100).toFixed(0)}%` : '0%'})
+                </span>
+                <span className="text-slate-600">|</span>
+                <span>
+                  Voice:{' '}
+                  <strong className="text-amber-400">
+                    {lastVoiceEvent?.recognized_command || 'IDLE'}
+                  </strong>{' '}
+                  ({lastVoiceEvent ? `${(lastVoiceEvent.recognition_confidence * 100).toFixed(0)}%` : '—'})
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Real-time CRS readout */}
+          <div className="flex items-center space-x-3 bg-slate-900/90 px-4 py-2 rounded-lg border border-slate-800">
+            <div className="text-right font-mono">
+              <span className="text-[10px] text-slate-500 block">COMMAND RELIABILITY</span>
+              <span
+                className={`text-xl font-bold ${
+                  crsScore === null
+                    ? 'text-slate-500'
+                    : isContradiction || crsScore <= 30.0
+                    ? 'text-rose-400'
+                    : crsScore >= 85.0
+                    ? 'text-emerald-400'
+                    : 'text-amber-400'
+                }`}
+              >
+                {crsScore !== null ? `${crsScore.toFixed(1)}` : '—'}
+                <span className="text-xs text-slate-500 font-normal"> / 100</span>
+              </span>
+            </div>
+            <span
+              className={`px-2 py-1 rounded text-xs font-mono font-bold uppercase ${
+                isContradiction || (crsScore !== null && crsScore <= 30.0)
+                  ? 'bg-rose-950 text-rose-300 border border-rose-600'
+                  : crsScore !== null && crsScore >= 85.0
+                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-600'
+                  : 'bg-amber-950 text-amber-300 border border-amber-600'
+              }`}
+            >
+              {latestFusion?.recommended_state || 'READY'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -149,7 +313,9 @@ export const JoystickDashboardPanel: React.FC = () => {
                 className="flex items-center space-x-1 px-2 py-0.5 rounded text-[10px] font-mono bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700 transition"
                 title="Rescan USB ports for flight sticks / gamepads"
               >
-                <RefreshCw className={`w-3 h-3 ${isRescanning ? 'animate-spin text-cyan-400' : 'text-slate-400'}`} />
+                <RefreshCw
+                  className={`w-3 h-3 ${isRescanning ? 'animate-spin text-cyan-400' : 'text-slate-400'}`}
+                />
                 <span>RESCAN</span>
               </button>
               {isHardwareConnected ? (
@@ -179,20 +345,6 @@ export const JoystickDashboardPanel: React.FC = () => {
               : 'No Physical USB/Bluetooth Joystick Detected'}
           </div>
 
-          {!isHardwareConnected && activeMode !== 'REAL_HARDWARE' && (
-            <div className="text-[11px] text-amber-300 bg-amber-950/40 p-2.5 rounded border border-amber-800/60 space-y-1 font-mono">
-              <div className="flex items-center space-x-1 font-bold text-amber-400">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                <span>HARDWARE CONNECTION GUIDE</span>
-              </div>
-              <ul className="list-disc pl-4 space-y-0.5 text-slate-300">
-                <li>Plug a USB flight joystick or Xbox/Bluetooth controller into your PC.</li>
-                <li>Click <strong>RESCAN</strong> or switch <strong>ACTIVE MODE</strong> to REAL HARDWARE.</li>
-                <li>Controllers connected through USB or the browser are automatically ingested.</li>
-              </ul>
-            </div>
-          )}
-
           <div className="text-xs text-slate-400 flex items-center justify-between pt-1 border-t border-slate-900">
             <span>Device ID: {status?.primary_device_id || 'None'}</span>
             <span>Controllers: {status?.connected_device_count ?? 0}</span>
@@ -214,12 +366,13 @@ export const JoystickDashboardPanel: React.FC = () => {
               <span>TELEMETRY STREAM (/ws/joystick/stream)</span>
             </div>
             <span
-              className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${isWsConnected
+              className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${
+                isWsConnected
                   ? 'text-cyan-400 bg-cyan-950/60 border-cyan-800'
                   : 'text-amber-400 bg-amber-950/60 border-amber-800'
-                }`}
+              }`}
             >
-              {isWsConnected ? 'LIVE 50Hz' : 'CONNECTING...'}
+              {isWsConnected ? 'LIVE 10Hz' : 'CONNECTING...'}
             </span>
           </div>
 
@@ -227,21 +380,25 @@ export const JoystickDashboardPanel: React.FC = () => {
             <div>
               <span className="text-slate-500 block">DIRECTION</span>
               <span className="text-slate-200 font-bold">
-                {lastEvent?.direction || 'CENTER'}
+                {lastJoyEvent?.direction || 'CENTER'}
               </span>
             </div>
             <div>
               <span className="text-slate-500 block">INTENSITY</span>
               <span className="text-emerald-400 font-bold">
-                {lastEvent ? `${(lastEvent.intensity * 100).toFixed(1)}%` : '0.0%'}
+                {lastJoyEvent ? `${(lastJoyEvent.intensity * 100).toFixed(1)}%` : '0.0%'}
               </span>
             </div>
           </div>
 
           <div className="text-[11px] text-slate-500 flex items-center justify-between pt-1 border-t border-slate-900 font-mono">
-            <span>Source: {lastEvent?.source || (activeMode === 'REAL_HARDWARE' ? 'PHYSICAL_HARDWARE' : 'VIRTUAL_SIMULATION')}</span>
             <span>
-              {lastEvent?.is_simulation ? (
+              Source:{' '}
+              {lastJoyEvent?.source ||
+                (activeMode === 'REAL_HARDWARE' ? 'PHYSICAL_HARDWARE' : 'VIRTUAL_SIMULATION')}
+            </span>
+            <span>
+              {lastJoyEvent?.is_simulation ? (
                 <span className="text-amber-400">[SIMULATION]</span>
               ) : (
                 <span className="text-emerald-400">[HARDWARE]</span>
@@ -278,39 +435,189 @@ export const JoystickDashboardPanel: React.FC = () => {
         <button
           type="button"
           onClick={() => setActiveTab('CONTROLS')}
-          className={`px-3 py-1.5 text-xs font-medium rounded transition ${activeTab === 'CONTROLS'
+          className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+            activeTab === 'CONTROLS'
               ? 'bg-slate-800 text-slate-100 font-bold border border-slate-700'
               : 'text-slate-400 hover:text-slate-200'
-            }`}
+          }`}
         >
-          Interactive Controls
+          Interactive Virtual Joystick
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('HISTORY')}
-          className={`px-3 py-1.5 text-xs font-medium rounded transition flex items-center space-x-1 ${activeTab === 'HISTORY'
+          className={`px-3 py-1.5 text-xs font-medium rounded transition flex items-center space-x-1 ${
+            activeTab === 'HISTORY'
               ? 'bg-slate-800 text-slate-100 font-bold border border-slate-700'
               : 'text-slate-400 hover:text-slate-200'
-            }`}
+          }`}
         >
           <History className="w-3.5 h-3.5" />
           <span>Live Telemetry Log ({eventHistory.length})</span>
         </button>
       </div>
 
-      {/* Tab 1: Virtual Joystick Simulator */}
+      {/* Tab 1: Virtual Joystick Simulator & Cross-Modal Testing */}
       {activeTab === 'CONTROLS' && (
-        <div className="space-y-4">
-          <VirtualJoystick
-            onVectorChange={(x, y, buttons) => {
-              if (activeMode === 'REAL_HARDWARE') {
-                sendHardwareInput(x, y, buttons, 'PHYSICAL-HARDWARE-CONTROLS');
-              } else {
-                sendVirtualInput(x, y, buttons);
-              }
-            }}
-            disabled={false}
-          />
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Left Column: Virtual Joystick Knob & D-Pad (7 cols) */}
+            <div className="lg:col-span-7">
+              <VirtualJoystick
+                onVectorChange={(x, y, buttons) => {
+                  if (activeMode === 'REAL_HARDWARE') {
+                    sendHardwareInput(x, y, buttons, 'PHYSICAL-HARDWARE-CONTROLS');
+                  } else {
+                    sendVirtualInput(x, y, buttons);
+                  }
+                }}
+                disabled={false}
+                externalAxes={
+                  lastJoyEvent && !lastJoyEvent.is_simulation
+                    ? { x: lastJoyEvent.axis_x, y: lastJoyEvent.axis_y }
+                    : null
+                }
+              />
+            </div>
+
+            {/* Right Column: 1-Click Speech-Motor Contradiction Testing Presets (5 cols) */}
+            <div className="lg:col-span-5 bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-4">
+              <div>
+                <div className="flex items-center space-x-2 text-slate-200 mb-1">
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  <h4 className="text-xs font-bold uppercase tracking-wider font-mono">
+                    1-Click Contradiction Testing
+                  </h4>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Instantly triggers opposing speech commands against joystick deflections to demonstrate the zero-override Contradiction Veto (CRS &le; 30.0 RED).
+                </p>
+
+                <div className="space-y-2 mt-3">
+                  {/* Test 1: Lateral Contradiction (RIGHT Stick vs LEFT Voice) */}
+                  <button
+                    type="button"
+                    disabled={testActionLoading !== null}
+                    onClick={() =>
+                      handleRunCrossModalTest(
+                        'LATERAL_CONTRADICTION',
+                        0.85,
+                        0.0,
+                        'left',
+                        'Contradiction Veto triggered: Stick RIGHT vs Voice LEFT (CRS <= 30.0 RED)'
+                      )
+                    }
+                    className="w-full flex items-center justify-between p-2.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-200 border border-rose-800/80 transition text-xs font-mono text-left group"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                      <div>
+                        <strong className="block text-rose-300">Stick RIGHT vs Voice LEFT</strong>
+                        <span className="text-[10px] text-slate-400">Lateral Contradiction &rarr; Veto Clamps to 30.0</span>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-rose-400 group-hover:translate-x-1 transition" />
+                  </button>
+
+                  {/* Test 2: Longitudinal Contradiction (FORWARD Stick vs BACKWARD Voice) */}
+                  <button
+                    type="button"
+                    disabled={testActionLoading !== null}
+                    onClick={() =>
+                      handleRunCrossModalTest(
+                        'LONGITUDINAL_CONTRADICTION',
+                        0.0,
+                        0.85,
+                        'backward',
+                        'Contradiction Veto triggered: Stick FORWARD vs Voice BACKWARD (CRS <= 30.0 RED)'
+                      )
+                    }
+                    className="w-full flex items-center justify-between p-2.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-200 border border-rose-800/80 transition text-xs font-mono text-left group"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <span className="w-2 h-2 rounded-full bg-rose-500" />
+                      <div>
+                        <strong className="block text-rose-300">Stick FWD vs Voice BACKWARD</strong>
+                        <span className="text-[10px] text-slate-400">Opposing 180&deg; &rarr; Veto Clamps to 30.0</span>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-rose-400 group-hover:translate-x-1 transition" />
+                  </button>
+
+                  {/* Test 3: Stop Override (FORWARD Stick vs STOP Voice) */}
+                  <button
+                    type="button"
+                    disabled={testActionLoading !== null}
+                    onClick={() =>
+                      handleRunCrossModalTest(
+                        'STOP_OVERRIDE',
+                        0.0,
+                        0.85,
+                        'stop',
+                        'Stop Veto asserted: Stick moving vs Voice STOP (CRS <= 30.0 RED)'
+                      )
+                    }
+                    className="w-full flex items-center justify-between p-2.5 rounded-lg bg-red-950/50 hover:bg-red-900/70 text-red-200 border border-red-700 transition text-xs font-mono text-left group"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <Volume2 className="w-4 h-4 text-red-400" />
+                      <div>
+                        <strong className="block text-red-300">Stick FWD vs Voice STOP</strong>
+                        <span className="text-[10px] text-slate-400">Emergency Stop Preemption &rarr; Veto</span>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-red-400 group-hover:translate-x-1 transition" />
+                  </button>
+
+                  {/* Test 4: Multimodal Agreement (FORWARD Stick vs FORWARD Voice) */}
+                  <button
+                    type="button"
+                    disabled={testActionLoading !== null}
+                    onClick={() =>
+                      handleRunCrossModalTest(
+                        'AGREEMENT_FWD',
+                        0.0,
+                        0.85,
+                        'forward',
+                        'Multimodal Agreement: Stick FORWARD + Voice FORWARD (CRS >= 85.0 GREEN)'
+                      )
+                    }
+                    className="w-full flex items-center justify-between p-2.5 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-200 border border-emerald-800/80 transition text-xs font-mono text-left group"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <div>
+                        <strong className="block text-emerald-300">Stick FWD + Voice FORWARD</strong>
+                        <span className="text-[10px] text-slate-400">Concordant &rarr; High Reliability &ge; 85.0</span>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-emerald-400 group-hover:translate-x-1 transition" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Status / Feedback note */}
+              {testResultFeedback && (
+                <div className="p-2.5 rounded bg-slate-900 border border-slate-800 text-[11px] font-mono text-cyan-300 flex items-start space-x-2">
+                  <Activity className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
+                  <span>{testResultFeedback}</span>
+                </div>
+              )}
+
+              {/* Reset to Neutral Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  sendVirtualInput(0.0, 0.0, [false, false, false, false]);
+                  setTestResultFeedback('Joystick reset to Neutral Center (0.0, 0.0).');
+                }}
+                className="w-full py-1.5 px-3 rounded bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 flex items-center justify-center space-x-2 text-xs font-mono transition"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
+                <span>Reset Joystick to Neutral (0, 0)</span>
+              </button>
+            </div>
+          </div>
 
           {activeMode === 'REAL_HARDWARE' && (
             <div className="p-3 bg-emerald-950/30 border border-emerald-800/80 rounded-lg flex items-center justify-between text-xs font-mono">
@@ -341,10 +648,11 @@ export const JoystickDashboardPanel: React.FC = () => {
               >
                 <div className="flex items-center space-x-2">
                   <span
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${ev.is_simulation
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                      ev.is_simulation
                         ? 'bg-amber-950 text-amber-300 border border-amber-800'
                         : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                      }`}
+                    }`}
                   >
                     {ev.is_simulation ? 'SIM' : 'HW'}
                   </span>

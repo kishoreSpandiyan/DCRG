@@ -197,6 +197,32 @@ class SafetyManager:
         self._dispatch(estop_decision)
         return estop_decision
 
+    def trigger_emergency_hold(
+        self,
+        keyword: str = "STOP",
+        confidence: float = 0.90,
+        source: EmergencySource = EmergencySource.KEYWORD_SPOTTER,
+        detection_latency_ms: float = 0.0,
+    ) -> SafetyDecision:
+        """
+        Fast-Path Emergency Hold Gate (DCRG Emergency Interlock).
+        Immediately engages safety latch and halts simulated motion within < 60ms upon
+        detection of an emergency keyword (STOP, HOLD, ABORT, LAND, EMERGENCY STOP).
+        Does NOT wait for speech-to-text transcript or multi-modal fusion.
+        """
+        t_gate_start = time.perf_counter_ns()
+        reason = f"Immediate Emergency Keyword '{keyword}' (conf: {confidence*100:.1f}%, kws_latency: {detection_latency_ms:.1f}ms)"
+        estop = self.trigger_emergency_stop(
+            source=source,
+            reason=reason,
+            operator_id="OP-FAST-KWS",
+        )
+        t_gate_latency_ms = (time.perf_counter_ns() - t_gate_start) / 1e6
+        logger.warning(
+            f"[FAST-SAFETY-GATE] Emergency hold engaged in {t_gate_latency_ms:.2f}ms for keyword '{keyword}'"
+        )
+        return estop
+
     def reset_emergency_stop(
         self,
         reset_pin: str,

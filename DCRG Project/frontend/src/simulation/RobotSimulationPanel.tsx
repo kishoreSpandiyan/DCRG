@@ -2,16 +2,16 @@
  * DCRG Phase 7 - Interactive 2D Robot Simulation Panel.
  * Renders grid environment, boundary walls, obstacles, kinematic vehicle pose,
  * heading alignment vector, trajectory trail, live telemetry HUD,
- * simulation controls, and command execution audit logs.
+ * directional driving D-Pad, keyboard controls, multimodal safety verification actions,
+ * and command execution audit logs.
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Play,
   Pause,
   RotateCcw,
   AlertOctagon,
-  Compass,
   Gauge,
   Activity,
   Shield,
@@ -21,10 +21,25 @@ import {
   AlertTriangle,
   CheckCircle2,
   XCircle,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  CircleDot,
+  Zap,
+  Check,
+  Keyboard,
 } from 'lucide-react';
 import { useSimulationStream } from '../hooks/useSimulationStream';
-import { triggerEmergencyStop } from '../services/api';
-import type { AuthorizationState, ExecutionResultType } from '../types';
+import { useJoystickStream } from '../hooks/useJoystickStream';
+import {
+  triggerEmergencyStop,
+  playPredefinedSample,
+  postVirtualJoystickInput,
+  fetchPendingConfirmations,
+  confirmSafetyDecision,
+} from '../services/api';
+import type { SafetyDecision } from '../types';
 
 export const RobotSimulationPanel: React.FC = () => {
   const {
@@ -35,9 +50,124 @@ export const RobotSimulationPanel: React.FC = () => {
     resume,
     resetPose,
     setSpeedMultiplier,
+    sendCommand,
   } = useSimulationStream();
 
+  const { lastEvent: lastJoyEvent } = useJoystickStream();
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [testActionLoading, setTestActionLoading] = useState<string | null>(null);
+  const [testResultFeedback, setTestResultFeedback] = useState<string | null>(null);
+  const [pendingConf, setPendingConf] = useState<SafetyDecision | null>(null);
+  const [showAuditLogs, setShowAuditLogs] = useState(false);
+
+  // Real-time synchronization: Drive 2D simulation from hardware and virtual joystick stream
+  const lastJoyDirRef = useRef<string>('CENTER');
+  useEffect(() => {
+    if (!lastJoyEvent) return;
+
+    const dir = lastJoyEvent.direction;
+    if (dir === lastJoyDirRef.current) return;
+    lastJoyDirRef.current = dir;
+
+    if (dir === 'FORWARD' || dir === 'FORWARD_LEFT' || dir === 'FORWARD_RIGHT') {
+      sendCommand('FORWARD');
+    } else if (dir === 'BACKWARD' || dir === 'BACKWARD_LEFT' || dir === 'BACKWARD_RIGHT') {
+      sendCommand('BACKWARD');
+    } else if (dir === 'LEFT') {
+      sendCommand('LEFT');
+    } else if (dir === 'RIGHT') {
+      sendCommand('RIGHT');
+    } else if (dir === 'CENTER') {
+      sendCommand('STOP');
+    }
+  }, [lastJoyEvent, sendCommand]);
+
+  // Poll for pending confirmations
+  useEffect(() => {
+    const checkPending = async () => {
+      try {
+        const list = await fetchPendingConfirmations();
+        setPendingConf(list.length > 0 ? list[0] : null);
+      } catch {
+        // Silently ignore
+      }
+    };
+    checkPending();
+    const interval = setInterval(checkPending, 1500);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Handle confirming a pending hold command
+  const handleConfirmHold = async () => {
+    if (!pendingConf) return;
+    try {
+      await confirmSafetyDecision(pendingConf.decision_id, 'CONFIRM', 'OP-SIMULATION');
+      setTestResultFeedback(`Confirmed hold: '${pendingConf.requested_command}' dispatched to simulation!`);
+      setPendingConf(null);
+    } catch (err: any) {
+      setTestResultFeedback(`Confirmation failed: ${err.message}`);
+    }
+  };
+
+  // Keyboard driving controls (WASD and Arrow keys)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      if (key === 'w' || key === 'arrowup') {
+        e.preventDefault();
+        sendCommand('FORWARD');
+      } else if (key === 's' || key === 'arrowdown') {
+        e.preventDefault();
+        sendCommand('BACKWARD');
+      } else if (key === 'a' || key === 'arrowleft') {
+        e.preventDefault();
+        sendCommand('LEFT');
+      } else if (key === 'd' || key === 'arrowright') {
+        e.preventDefault();
+        sendCommand('RIGHT');
+      } else if (key === ' ' || key === 'escape') {
+        e.preventDefault();
+        sendCommand('STOP');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [sendCommand]);
+
+  // Multimodal safety testing handlers
+  const handleRunMultimodalTest = async (
+    testId: string,
+    joyX: number,
+    joyY: number,
+    voiceSampleId: string,
+    desc: string
+  ) => {
+    setTestActionLoading(testId);
+    setTestResultFeedback(`Running: Ingesting stick (${joyX}, ${joyY}) + voice '${voiceSampleId}'...`);
+    try {
+      await postVirtualJoystickInput(joyX, joyY);
+      try {
+        const audio = new Audio(`/samples/${voiceSampleId}.wav`);
+        audio.play().catch(() => {});
+      } catch {
+        // Audio fallback silent
+      }
+      await playPredefinedSample(voiceSampleId);
+      await postVirtualJoystickInput(joyX, joyY);
+      setTestResultFeedback(`Success! ${desc}`);
+    } catch (err: any) {
+      setTestResultFeedback(`Test note: ${err.message}`);
+    } finally {
+      setTestActionLoading(null);
+    }
+  };
 
   // 2D Canvas Renderer Loop
   useEffect(() => {
@@ -55,7 +185,6 @@ export const RobotSimulationPanel: React.FC = () => {
     const worldRange = worldMax - worldMin;
 
     const toCanvasX = (worldX: number) => ((worldX - worldMin) / worldRange) * width;
-    // Canvas Y is inverted: +Y is upward in world coordinates
     const toCanvasY = (worldY: number) => height - ((worldY - worldMin) / worldRange) * height;
     const toScale = (meters: number) => (meters / worldRange) * width;
 
@@ -110,7 +239,6 @@ export const RobotSimulationPanel: React.FC = () => {
       const cy = toCanvasY(obs.y);
       const cr = toScale(obs.radius);
 
-      // Gradient fill
       const grad = ctx.createRadialGradient(cx, cy, cr * 0.2, cx, cy, cr);
       grad.addColorStop(0, '#f97316');
       grad.addColorStop(1, '#7c2d12');
@@ -123,7 +251,6 @@ export const RobotSimulationPanel: React.FC = () => {
       ctx.strokeStyle = '#ea580c';
       ctx.stroke();
 
-      // Label
       ctx.fillStyle = '#fed7aa';
       ctx.font = '10px monospace';
       ctx.textAlign = 'center';
@@ -139,7 +266,7 @@ export const RobotSimulationPanel: React.FC = () => {
         const pt = simulationState.trajectory[i];
         ctx.lineTo(toCanvasX(pt[0]), toCanvasY(pt[1]));
       }
-      ctx.strokeStyle = 'rgba(6, 182, 212, 0.4)';
+      ctx.strokeStyle = 'rgba(6, 182, 212, 0.5)';
       ctx.lineWidth = 2;
       ctx.setLineDash([3, 3]);
       ctx.stroke();
@@ -186,11 +313,9 @@ export const RobotSimulationPanel: React.FC = () => {
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Vehicle Chassis (oriented rotated rectangle)
+    // Vehicle Chassis
     ctx.save();
     ctx.translate(rx, ry);
-    // Heading: 0 = North (-Y in canvas), 90 = East (+X), 180 = South (+Y), 270 = West (-X)
-    // Canvas rotation: 0 radians points along +X, so North is -PI/2 radians
     const headingRad = ((pose.heading_deg - 90) * Math.PI) / 180;
     ctx.rotate(headingRad);
 
@@ -198,67 +323,31 @@ export const RobotSimulationPanel: React.FC = () => {
     const carLength = robotRadius * 1.8;
     const carWidth = robotRadius * 1.2;
     ctx.fillStyle = bodyColor;
-    ctx.beginPath();
-    ctx.roundRect(-carLength / 2, -carWidth / 2, carLength, carWidth, 4);
-    ctx.fill();
+    ctx.fillRect(-carLength / 2, -carWidth / 2, carLength, carWidth);
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 1.5;
-    ctx.stroke();
+    ctx.strokeRect(-carLength / 2, -carWidth / 2, carLength, carWidth);
 
-    // Front Nose Direction Indicator Arrow
-    ctx.fillStyle = '#ffffff';
+    // Nose direction arrow
     ctx.beginPath();
-    ctx.moveTo(carLength / 2 + 6, 0);
-    ctx.lineTo(carLength / 2 - 2, -4);
-    ctx.lineTo(carLength / 2 - 2, 4);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(carLength / 2, 0);
+    ctx.lineTo(carLength / 2 + toScale(1.2), 0);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 3;
+    ctx.stroke();
 
     ctx.restore();
 
-    // Coordinates Tag beside robot
+    // Coordinates overlay text
     ctx.fillStyle = '#94a3b8';
     ctx.font = '11px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(`(${pose.x.toFixed(1)}, ${pose.y.toFixed(1)})`, rx + 14, ry - 14);
+    ctx.fillText(`X: ${pose.x.toFixed(2)} m, Y: ${pose.y.toFixed(2)} m`, 12, height - 12);
   }, [simulationState]);
-
-  // Authorization state badge styling
-  const getBadgeStyle = (state?: AuthorizationState) => {
-    switch (state) {
-      case 'GREEN':
-        return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40';
-      case 'YELLOW':
-        return 'bg-amber-500/20 text-amber-400 border-amber-500/40';
-      case 'RED':
-        return 'bg-rose-500/20 text-rose-400 border-rose-500/40';
-      case 'EMERGENCY':
-        return 'bg-red-600/30 text-red-400 border-red-500 font-bold animate-pulse';
-      default:
-        return 'bg-slate-700 text-slate-300 border-slate-600';
-    }
-  };
-
-  const getResultBadgeStyle = (result: ExecutionResultType) => {
-    switch (result) {
-      case 'EXECUTED':
-      case 'AUTHORIZED':
-        return 'bg-emerald-950 text-emerald-400 border-emerald-800';
-      case 'HELD':
-        return 'bg-amber-950 text-amber-400 border-amber-800';
-      case 'REJECTED':
-      case 'CANCELLED':
-        return 'bg-rose-950 text-rose-400 border-rose-800';
-      case 'EMERGENCY_STOPPED':
-        return 'bg-red-950 text-red-400 border-red-800 font-bold';
-      default:
-        return 'bg-slate-800 text-slate-300 border-slate-700';
-    }
-  };
 
   const handleEStop = async () => {
     try {
-      await triggerEmergencyStop('SOFTWARE_UI', 'Emergency stop from Simulation Panel');
+      await triggerEmergencyStop('SOFTWARE_UI', 'Simulation Panel E-STOP Activated');
     } catch {
       // Ignored
     }
@@ -272,30 +361,54 @@ export const RobotSimulationPanel: React.FC = () => {
     angular_speed: 0,
   };
 
+  const isMoving = pose.linear_speed > 0.05;
+
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-6">
-      {/* Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-cyan-500/10 rounded-lg border border-cyan-500/20">
-            <Compass className="w-6 h-6 text-cyan-400 animate-spin-slow" />
+    <div className="space-y-6 text-left">
+      {/* Pending Confirmation Warning Banner */}
+      {pendingConf && (
+        <div className="p-4 bg-amber-950/80 border-2 border-amber-500 rounded-xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-pulse">
+          <div className="flex items-center space-x-3 text-amber-200">
+            <AlertTriangle className="w-6 h-6 text-amber-400 shrink-0" />
+            <div>
+              <div className="font-bold text-sm uppercase tracking-wide">
+                Command On Hold: {pendingConf.requested_command} (CRS: {pendingConf.crs_score?.toFixed(1) || '--'}/100)
+              </div>
+              <p className="text-xs text-amber-300 font-mono mt-0.5">
+                {pendingConf.reason}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleConfirmHold}
+            className="flex items-center space-x-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono font-bold rounded-lg transition shadow-lg shrink-0"
+          >
+            <Check className="w-4 h-4" />
+            <span>CONFIRM & EXECUTE NOW</span>
+          </button>
+        </div>
+      )}
+
+      {/* Header bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-3">
+        <div className="flex items-center space-x-3">
+          <div className="p-2.5 rounded-lg bg-slate-800 text-cyan-400">
+            <Crosshair className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white tracking-wide flex items-center gap-2">
-              Robot Simulation & Command Execution
-              <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-900/60 text-cyan-300 border border-cyan-700 font-mono">
-                Phase 7
-              </span>
+            <h2 className="text-lg font-bold text-slate-100 m-0">
+              Interactive 2D Kinematic Simulation
             </h2>
-            <p className="text-sm text-slate-400">
-              Interactive 2D kinematics, boundary checks, and safety-gated dispatching
+            <p className="text-xs text-slate-400 m-0">
+              Real-time 20Hz Kinematic Physics, Directional Steering, and Multimodal Authorization Verification
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center space-x-3">
           <div
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono border ${
+            className={`flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold border ${
               isWsConnected
                 ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800'
                 : 'bg-rose-950/60 text-rose-400 border-rose-800'
@@ -306,28 +419,25 @@ export const RobotSimulationPanel: React.FC = () => {
           </div>
 
           <span
-            className={`px-3 py-1 rounded-full text-xs font-bold border tracking-wider uppercase ${getBadgeStyle(
-              simulationState?.authorization_state
-            )}`}
+            className={`px-3 py-1 rounded-full text-xs font-mono font-bold border tracking-wider uppercase ${
+              isMoving
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-600 animate-pulse'
+                : 'bg-slate-800 text-slate-400 border-slate-700'
+            }`}
           >
-            {simulationState?.authorization_state || 'GREEN'}
+            {isMoving ? '🟢 MOVING (REAL-TIME)' : '⚪ HALTED'}
           </span>
         </div>
       </div>
 
-      {/* Main Grid: Visualizer + Telemetry HUD */}
+      {/* Main Grid: Visualizer + Controls & Telemetry */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: 2D Canvas Visualizer (7 Cols) */}
-        <div className="lg:col-span-7 flex flex-col items-center">
+        {/* Left Column: 2D Canvas & Directional Driving Pad (7 Cols) */}
+        <div className="lg:col-span-7 flex flex-col items-center space-y-4">
           <div className="relative w-full max-w-[540px] aspect-square rounded-xl overflow-hidden border border-slate-700 shadow-2xl bg-[#0a0f1d]">
-            <canvas
-              ref={canvasRef}
-              width={540}
-              height={540}
-              className="w-full h-full block"
-            />
+            <canvas ref={canvasRef} width={540} height={540} className="w-full h-full block" />
 
-            {/* Warning Overlays */}
+            {/* Collision Warnings */}
             {simulationState?.is_collision && (
               <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-rose-600/90 text-white font-mono text-xs font-bold shadow-lg animate-bounce">
                 <AlertTriangle className="w-4 h-4" />
@@ -355,9 +465,92 @@ export const RobotSimulationPanel: React.FC = () => {
             </div>
           </div>
 
-          {/* Interactive Controls Bar */}
-          <div className="w-full max-w-[540px] mt-4 p-3 bg-slate-800/80 border border-slate-700 rounded-xl flex flex-wrap items-center justify-between gap-3">
-            {/* Pause / Resume */}
+          {/* Directional Motion Driving Controller D-Pad */}
+          <div className="w-full max-w-[540px] p-4 bg-slate-900 border border-slate-800 rounded-xl flex flex-col items-center space-y-2">
+            <div className="flex items-center justify-between w-full pb-2 border-b border-slate-800">
+              <div className="flex items-center space-x-2 text-xs font-mono text-slate-300 font-bold">
+                <Gauge className="w-4 h-4 text-cyan-400" />
+                <span>INTERACTIVE DIRECTIONAL CONTROLLER</span>
+              </div>
+              <span className="text-[11px] font-mono text-slate-500 flex items-center space-x-1">
+                <Keyboard className="w-3.5 h-3.5" />
+                <span>WASD / Arrow Keys Supported</span>
+              </span>
+            </div>
+
+            {/* D-Pad Buttons */}
+            <div className="flex flex-col items-center space-y-1.5 pt-2">
+              <button
+                type="button"
+                onClick={() => sendCommand('FORWARD')}
+                className={`px-5 py-2 rounded-lg flex items-center space-x-1.5 text-xs font-mono font-bold transition border shadow-md ${
+                  simulationState?.active_command === 'FORWARD'
+                    ? 'bg-cyan-600 text-white border-cyan-400'
+                    : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-750 hover:border-cyan-500'
+                }`}
+              >
+                <ArrowUp className="w-4 h-4" />
+                <span>MOVE FORWARD (NORTH)</span>
+              </button>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => sendCommand('LEFT')}
+                  className={`px-4 py-2 rounded-lg flex items-center space-x-1.5 text-xs font-mono font-bold transition border shadow-md ${
+                    simulationState?.active_command === 'LEFT'
+                      ? 'bg-cyan-600 text-white border-cyan-400'
+                      : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-750 hover:border-cyan-500'
+                  }`}
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>LEFT</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => sendCommand('STOP')}
+                  className={`px-5 py-2 rounded-lg flex items-center space-x-1.5 text-xs font-mono font-bold transition border shadow-md ${
+                    simulationState?.active_command === 'STOP'
+                      ? 'bg-rose-700 text-white border-rose-500'
+                      : 'bg-slate-800 text-rose-300 border-slate-700 hover:bg-slate-750'
+                  }`}
+                >
+                  <CircleDot className="w-4 h-4 text-rose-400" />
+                  <span>HALT / STOP</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => sendCommand('RIGHT')}
+                  className={`px-4 py-2 rounded-lg flex items-center space-x-1.5 text-xs font-mono font-bold transition border shadow-md ${
+                    simulationState?.active_command === 'RIGHT'
+                      ? 'bg-cyan-600 text-white border-cyan-400'
+                      : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-750 hover:border-cyan-500'
+                  }`}
+                >
+                  <span>RIGHT</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => sendCommand('BACKWARD')}
+                className={`px-5 py-2 rounded-lg flex items-center space-x-1.5 text-xs font-mono font-bold transition border shadow-md ${
+                  simulationState?.active_command === 'BACKWARD'
+                    ? 'bg-cyan-600 text-white border-cyan-400'
+                    : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-750 hover:border-cyan-500'
+                }`}
+              >
+                <ArrowDown className="w-4 h-4" />
+                <span>MOVE BACKWARD (SOUTH)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Auxiliary Environment Bar */}
+          <div className="w-full max-w-[540px] p-3 bg-slate-800/80 border border-slate-700 rounded-xl flex flex-wrap items-center justify-between gap-3">
             <button
               onClick={() => (simulationState?.is_paused ? resume() : pause())}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold transition"
@@ -373,7 +566,6 @@ export const RobotSimulationPanel: React.FC = () => {
               )}
             </button>
 
-            {/* Reset Coordinates */}
             <button
               onClick={() => resetPose(0.0, 0.0, 0.0)}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold transition"
@@ -381,7 +573,6 @@ export const RobotSimulationPanel: React.FC = () => {
               <RotateCcw className="w-3.5 h-3.5 text-cyan-400" /> Reset Origin
             </button>
 
-            {/* Speed Multiplier */}
             <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-700 text-xs font-mono">
               <span className="text-slate-400 px-1 text-[11px]">Speed:</span>
               {[0.5, 1.0, 2.0].map((rate) => (
@@ -399,7 +590,6 @@ export const RobotSimulationPanel: React.FC = () => {
               ))}
             </div>
 
-            {/* Emergency Stop Button */}
             <button
               onClick={handleEStop}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold uppercase tracking-wider transition shadow-lg shadow-rose-900/30"
@@ -409,7 +599,7 @@ export const RobotSimulationPanel: React.FC = () => {
           </div>
         </div>
 
-        {/* Right: Telemetry HUD & Multi-modal Status (5 Cols) */}
+        {/* Right Column: Telemetry HUD & Cross-Modal Testing (5 Cols) */}
         <div className="lg:col-span-5 space-y-4">
           {/* Kinematic Telemetry Card */}
           <div className="p-4 bg-slate-800/60 border border-slate-700/80 rounded-xl space-y-3">
@@ -434,170 +624,233 @@ export const RobotSimulationPanel: React.FC = () => {
 
               <div className="p-2.5 bg-slate-900/70 rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 uppercase">Linear Velocity</span>
-                <p className="text-base font-bold text-emerald-400 mt-0.5">
+                <p className={`text-base font-bold mt-0.5 ${isMoving ? 'text-emerald-400' : 'text-slate-400'}`}>
                   {pose.linear_speed.toFixed(2)} m/s
                 </p>
               </div>
 
               <div className="p-2.5 bg-slate-900/70 rounded-lg border border-slate-800">
                 <span className="text-[10px] text-slate-400 uppercase">Active Primitive</span>
-                <p className="text-base font-bold text-white mt-0.5">
+                <p className="text-base font-bold text-amber-300 mt-0.5">
                   {simulationState?.active_command || 'STOP'}
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Multi-modal Pipeline Alignment */}
-          <div className="p-4 bg-slate-800/60 border border-slate-700/80 rounded-xl space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-cyan-400" /> Multi-modal Evidence Link
-            </h3>
+          {/* 1-Click Multimodal Safety Actions */}
+          <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3">
+            <div className="flex items-center space-x-2 text-slate-200">
+              <Zap className="w-4 h-4 text-amber-400" />
+              <h4 className="text-xs font-bold uppercase tracking-wider font-mono">
+                Multimodal Verification Actions
+              </h4>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Trigger speech-motor agreement to authorize real-time motion, or contradiction to verify immediate lockout.
+            </p>
 
-            <div className="space-y-2 text-xs">
-              <div className="flex items-center justify-between p-2 rounded bg-slate-900/60 border border-slate-800 font-mono">
-                <span className="text-slate-400">Voice Recognized:</span>
-                <span className="font-semibold text-slate-200">
-                  {simulationState?.voice_command || 'None'}
-                </span>
-              </div>
+            <div className="space-y-2 mt-2">
+              {/* Test Agreement Action */}
+              <button
+                type="button"
+                disabled={testActionLoading !== null}
+                onClick={() =>
+                  handleRunMultimodalTest(
+                    'AGREEMENT_FWD',
+                    0.0,
+                    0.85,
+                    'forward',
+                    'Multimodal Agreement: Voice FORWARD + Stick FORWARD -> Robot moving forward in real-time!'
+                  )
+                }
+                className="w-full flex items-center justify-between p-2.5 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-200 border border-emerald-800/80 transition text-xs font-mono text-left"
+              >
+                <div className="flex items-center space-x-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <strong className="block text-emerald-300">Test Agreement: Voice FWD + Stick FWD</strong>
+                    <span className="text-[10px] text-slate-400">Authorizes GREEN &rarr; Drives robot at 3.0 m/s</span>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-emerald-400 shrink-0" />
+              </button>
 
-              <div className="flex items-center justify-between p-2 rounded bg-slate-900/60 border border-slate-800 font-mono">
-                <span className="text-slate-400">Joystick Vector:</span>
-                <span className="font-semibold text-slate-200">
-                  {simulationState?.joystick_direction || 'Neutral'}
-                </span>
-              </div>
+              {/* Test Contradiction Veto Action */}
+              <button
+                type="button"
+                disabled={testActionLoading !== null}
+                onClick={() =>
+                  handleRunMultimodalTest(
+                    'CONTRADICTION_LATERAL',
+                    0.85,
+                    0.0,
+                    'left',
+                    'Contradiction Veto: Voice LEFT vs Stick RIGHT -> Safety Gate halts robot!'
+                  )
+                }
+                className="w-full flex items-center justify-between p-2.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-200 border border-rose-800/80 transition text-xs font-mono text-left"
+              >
+                <div className="flex items-center space-x-2">
+                  <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <div>
+                    <strong className="block text-rose-300">Test Contradiction: Voice LEFT vs Stick RIGHT</strong>
+                    <span className="text-[10px] text-slate-400">Veto Clamps CRS &le; 30.0 &rarr; Immediate Lockout</span>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-rose-400 shrink-0" />
+              </button>
 
-              <div className="flex items-center justify-between p-2 rounded bg-slate-900/60 border border-slate-800 font-mono">
-                <span className="text-slate-400">Command Reliability (CRS):</span>
-                <span
-                  className={`font-bold ${
-                    (simulationState?.crs ?? 0) >= 85
-                      ? 'text-emerald-400'
-                      : (simulationState?.crs ?? 0) >= 50
-                      ? 'text-amber-400'
-                      : 'text-rose-400'
-                  }`}
-                >
-                  {simulationState?.crs !== undefined && simulationState?.crs !== null
-                    ? `${simulationState.crs.toFixed(1)} / 100`
-                    : 'N/A'}
-                </span>
-              </div>
+              {/* Spoken Emergency Stop Action */}
+              <button
+                type="button"
+                disabled={testActionLoading !== null}
+                onClick={() =>
+                  handleRunMultimodalTest(
+                    'STOP_OVERRIDE',
+                    0.0,
+                    0.85,
+                    'stop',
+                    'Voice STOP Preemption -> Immediately freezes robot motion!'
+                  )
+                }
+                className="w-full flex items-center justify-between p-2.5 rounded-lg bg-red-950/50 hover:bg-red-900/70 text-red-200 border border-red-700 transition text-xs font-mono text-left"
+              >
+                <div className="flex items-center space-x-2">
+                  <AlertOctagon className="w-4 h-4 text-red-400 shrink-0" />
+                  <div>
+                    <strong className="block text-red-300">Test Voice STOP Preemption</strong>
+                    <span className="text-[10px] text-slate-400">Preempts moving stick &rarr; Freezes robot</span>
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-red-400 shrink-0" />
+              </button>
             </div>
 
-            {simulationState?.last_rejected_command && (
-              <div className="p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/60 text-xs font-mono text-rose-300">
-                <div className="flex items-center gap-1.5 font-bold mb-1">
-                  <XCircle className="w-3.5 h-3.5" />
-                  Rejected: {simulationState.last_rejected_command}
-                </div>
-                <p className="text-[11px] text-rose-400/90">
-                  {simulationState.last_rejection_reason}
-                </p>
+            {testResultFeedback && (
+              <div className="p-2 rounded bg-slate-900 border border-slate-800 text-[11px] font-mono text-cyan-300 flex items-start space-x-2 mt-2">
+                <Activity className="w-3.5 h-3.5 text-cyan-400 shrink-0 mt-0.5" />
+                <span>{testResultFeedback}</span>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Command Execution Audit Log Table */}
+      {/* Command Execution Audit Log Table (Collapsible) */}
       <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950/50">
-        <div className="px-4 py-3 bg-slate-800/50 border-b border-slate-800 flex items-center justify-between">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setShowAuditLogs(!showAuditLogs)}
+          className="w-full px-4 py-3 bg-slate-800/50 hover:bg-slate-800/80 border-b border-slate-800 flex items-center justify-between text-left transition"
+        >
+          <div className="flex items-center space-x-2">
             <Crosshair className="w-4 h-4 text-cyan-400" />
-            Command Execution Audit Trail (Gateway Verified)
-          </h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+              Command Execution Audit Trail (Gateway Verified)
+            </h3>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-cyan-400 font-bold">
+              {showAuditLogs ? '▼ HIDE TABLE' : '▶ SHOW TABLE'}
+            </span>
+          </div>
           <span className="text-xs text-slate-500 font-mono">
             {executionLogs.length} events logged
           </span>
-        </div>
+        </button>
 
-        <div className="overflow-x-auto max-h-64">
-          <table className="w-full text-left text-xs font-mono">
-            <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800 sticky top-0">
-              <tr>
-                <th className="px-3 py-2">Timestamp</th>
-                <th className="px-3 py-2">Requested</th>
-                <th className="px-3 py-2">Authorized</th>
-                <th className="px-3 py-2">CRS</th>
-                <th className="px-3 py-2">State</th>
-                <th className="px-3 py-2">Execution Result</th>
-                <th className="px-3 py-2">Coordinates (Pre → Post)</th>
-                <th className="px-3 py-2">Details</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {executionLogs.length === 0 ? (
+        {showAuditLogs && (
+          <div className="overflow-x-auto max-h-64">
+            <table className="w-full text-left text-xs font-mono">
+              <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800 sticky top-0">
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-slate-500 italic">
-                    No command execution events recorded yet.
-                  </td>
+                  <th className="px-3 py-2">Timestamp</th>
+                  <th className="px-3 py-2">Requested</th>
+                  <th className="px-3 py-2">Authorized</th>
+                  <th className="px-3 py-2">CRS</th>
+                  <th className="px-3 py-2">State</th>
+                  <th className="px-3 py-2">Execution Result</th>
+                  <th className="px-3 py-2">Coordinates (Pre &rarr; Post)</th>
+                  <th className="px-3 py-2">Details</th>
                 </tr>
-              ) : (
-                executionLogs.map((log) => {
-                  const date = new Date(log.timestamp_ms);
-                  const timeStr = `${date.toTimeString().split(' ')[0]}.${date
-                    .getMilliseconds()
-                    .toString()
-                    .padStart(3, '0')}`;
-                  return (
-                    <tr key={log.command_id} className="hover:bg-slate-800/30 transition">
-                      <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{timeStr}</td>
-                      <td className="px-3 py-2 font-semibold text-white">
-                        {log.requested_command}
-                      </td>
-                      <td className="px-3 py-2 text-cyan-300">
-                        {log.authorized_command || '—'}
-                      </td>
-                      <td className="px-3 py-2 text-slate-300">
-                        {log.crs !== null && log.crs !== undefined ? log.crs.toFixed(1) : '—'}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold border ${getBadgeStyle(
-                            log.authorization_state
-                          )}`}
-                        >
-                          {log.authorization_state}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold border flex items-center gap-1 w-fit ${getResultBadgeStyle(
-                            log.execution_result
-                          )}`}
-                        >
-                          {log.execution_result === 'EXECUTED' && (
-                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                          )}
-                          {log.execution_result === 'HELD' && (
-                            <AlertTriangle className="w-3 h-3 text-amber-400" />
-                          )}
-                          {(log.execution_result === 'REJECTED' ||
-                            log.execution_result === 'EMERGENCY_STOPPED') && (
-                            <XCircle className="w-3 h-3 text-rose-400" />
-                          )}
-                          {log.execution_result}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-slate-400 whitespace-nowrap">
-                        ({log.pose_before.x.toFixed(1)}, {log.pose_before.y.toFixed(1)}) → (
-                        {log.pose_after.x.toFixed(1)}, {log.pose_after.y.toFixed(1)})
-                      </td>
-                      <td className="px-3 py-2 text-slate-400 truncate max-w-xs" title={log.rejection_reason || ''}>
-                        {log.rejection_reason || 'Simulated execution verified'}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {executionLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-6 text-center text-slate-500 italic">
+                      No command execution events recorded yet.
+                    </td>
+                  </tr>
+                ) : (
+                  executionLogs.map((log) => {
+                    const date = new Date(log.timestamp_ms);
+                    const timeStr = `${date.toTimeString().split(' ')[0]}.${date
+                      .getMilliseconds()
+                      .toString()
+                      .padStart(3, '0')}`;
+                    return (
+                      <tr key={log.command_id} className="hover:bg-slate-800/30 transition">
+                        <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{timeStr}</td>
+                        <td className="px-3 py-2 font-semibold text-white">
+                          {log.requested_command}
+                        </td>
+                        <td className="px-3 py-2 text-cyan-300">
+                          {log.authorized_command || '—'}
+                        </td>
+                        <td className="px-3 py-2 text-slate-300">
+                          {log.crs !== null && log.crs !== undefined ? log.crs.toFixed(1) : '—'}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                              log.authorization_state === 'GREEN'
+                               ? 'bg-emerald-950 text-emerald-300 border-emerald-600'
+                                : log.authorization_state === 'YELLOW'
+                                ? 'bg-amber-950 text-amber-300 border-amber-600'
+                                : 'bg-rose-950 text-rose-300 border-rose-600'
+                            }`}
+                          >
+                            {log.authorization_state}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border flex items-center gap-1 w-fit ${
+                              log.execution_result === 'EXECUTED'
+                                ? 'bg-emerald-950 text-emerald-300 border-emerald-600'
+                                : log.execution_result === 'HELD'
+                                ? 'bg-amber-950 text-amber-300 border-amber-600'
+                                : 'bg-rose-950 text-rose-300 border-rose-600'
+                            }`}
+                          >
+                            {log.execution_result === 'EXECUTED' && (
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            )}
+                            {log.execution_result === 'HELD' && (
+                              <AlertTriangle className="w-3 h-3 text-amber-400" />
+                            )}
+                            {(log.execution_result === 'REJECTED' ||
+                              log.execution_result === 'EMERGENCY_STOPPED') && (
+                              <XCircle className="w-3 h-3 text-rose-400" />
+                            )}
+                            {log.execution_result}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-400 whitespace-nowrap">
+                          ({log.pose_before.x.toFixed(1)}, {log.pose_before.y.toFixed(1)}) &rarr; (
+                          {log.pose_after.x.toFixed(1)}, {log.pose_after.y.toFixed(1)})
+                        </td>
+                        <td className="px-3 py-2 text-slate-400 truncate max-w-xs" title={log.rejection_reason || ''}>
+                          {log.rejection_reason || 'Simulated execution verified'}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
 };
-

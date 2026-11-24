@@ -45,8 +45,8 @@ export function useSafetyStream() {
       return;
     }
 
-    const host = window.location.hostname || '127.0.0.1';
-    const wsUrl = `ws://${host}:8000/ws/safety/stream`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/safety/stream`;
 
     try {
       const ws = new WebSocket(wsUrl);

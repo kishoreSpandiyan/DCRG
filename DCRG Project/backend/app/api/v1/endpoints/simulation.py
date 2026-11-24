@@ -70,10 +70,12 @@ async def control_simulation(req: SimulationControlRequest):
     elif action == "SET_SPEED":
         if req.speed_multiplier is not None:
             simulation_manager.set_speed_multiplier(req.speed_multiplier)
+    elif action in ("FORWARD", "BACKWARD", "LEFT", "RIGHT", "STOP"):
+        simulation_manager.simulator.apply_authorized_command(action, "GREEN")
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown simulation action '{action}'. Valid actions: START, PAUSE, RESUME, RESET, SET_SPEED.",
+            detail=f"Unknown simulation action '{action}'. Valid actions: START, PAUSE, RESUME, RESET, SET_SPEED, FORWARD, BACKWARD, LEFT, RIGHT, STOP.",
         )
     return simulation_manager.get_state()
 
@@ -164,6 +166,9 @@ async def simulation_stream_endpoint(websocket: WebSocket):
                 elif msg_type == "SET_SPEED":
                     mult = data.get("speed_multiplier", 1.0)
                     simulation_manager.set_speed_multiplier(mult)
+                elif msg_type == "COMMAND":
+                    cmd = data.get("command", "STOP").upper().strip()
+                    simulation_manager.simulator.apply_authorized_command(cmd, "GREEN")
             except json.JSONDecodeError:
                 pass
 

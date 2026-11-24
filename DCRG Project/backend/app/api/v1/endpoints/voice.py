@@ -39,6 +39,21 @@ class ProcessAudioRequest(BaseModel):
     client_timestamp: Optional[float] = Field(None, description="Client timestamp in milliseconds")
 
 
+class AudioUploadBase64Request(BaseModel):
+    filename: str = Field(..., description="Uploaded audio filename")
+    audio_base64: str = Field(..., description="Base64 encoded audio file bytes")
+    operator_id: Optional[str] = Field("OP-PRIMARY", description="Operator identity identifier")
+
+
+class PredefinedSampleItem(BaseModel):
+    id: str
+    filename: str
+    command: str
+    label: str
+    description: str
+    url: str
+
+
 @router.get("/status", response_model=VoiceSystemStatus)
 async def get_voice_status():
     """Returns the truthful status of the microphone, model, and voice engine."""
@@ -118,17 +133,28 @@ async def process_audio_buffer(req: ProcessAudioRequest):
     Ingests and processes a discrete audio chunk (samples or base64).
     Returns the assembled VoiceEvent with Prosody and Semantic classification.
     """
+    target_sr = req.sample_rate
     if req.audio_samples is not None and len(req.audio_samples) > 0:
         audio_array = np.array(req.audio_samples, dtype=np.float32)
     elif req.audio_base64:
         try:
             raw_bytes = base64.b64decode(req.audio_base64)
-            # Try float32 first, fallback to int16
-            if len(raw_bytes) % 4 == 0:
-                audio_array = np.frombuffer(raw_bytes, dtype=np.float32)
-            else:
-                int_data = np.frombuffer(raw_bytes, dtype=np.int16)
-                audio_array = int_data.astype(np.float32) / 32768.0
+            # Try soundfile decoding first (supports WAV/FLAC/OGG containers)
+            try:
+                import io
+                import soundfile as sf
+                data, file_sr = sf.read(io.BytesIO(raw_bytes))
+                if data.ndim > 1:
+                    data = data.mean(axis=1)
+                audio_array = data.astype(np.float32)
+                target_sr = file_sr
+            except Exception:
+                target_sr = req.sample_rate
+                if len(raw_bytes) % 4 == 0:
+                    audio_array = np.frombuffer(raw_bytes, dtype=np.float32)
+                else:
+                    int_data = np.frombuffer(raw_bytes, dtype=np.int16)
+                    audio_array = int_data.astype(np.float32) / 32768.0
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -142,9 +168,141 @@ async def process_audio_buffer(req: ProcessAudioRequest):
 
     event = voice_manager.process_audio_chunk(
         audio_data=audio_array,
-        sample_rate=req.sample_rate,
+        sample_rate=target_sr,
         operator_id=req.operator_id or "OP-PRIMARY",
         client_timestamp=req.client_timestamp,
+    )
+    return event
+
+
+@router.post("/upload", response_model=VoiceEvent)
+async def upload_audio_file(req: AudioUploadBase64Request):
+    """
+    Uploads and processes an entire recorded or predefined audio file (WAV, MP3, etc.).
+    Extracts samples, runs speech-to-text, prosody, and semantic classification,
+    and dispatches to the multimodal synchronizer and CRS fusion engine.
+    """
+    try:
+        raw_bytes = base64.b64decode(req.audio_base64)
+        import io
+        import soundfile as sf
+        import librosa
+
+        data, sr = sf.read(io.BytesIO(raw_bytes))
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        if sr != 16000:
+            data = librosa.resample(data.astype(np.float32), orig_sr=sr, target_sr=16000)
+            sr = 16000
+        audio_array = data.astype(np.float32)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to decode and parse audio file '{req.filename}': {str(e)}",
+        )
+
+    event = voice_manager.process_audio_chunk(
+        audio_data=audio_array,
+        sample_rate=sr,
+        operator_id=req.operator_id or "OP-UPLOAD",
+    )
+    return event
+
+
+@router.get("/samples", response_model=List[PredefinedSampleItem])
+async def list_predefined_samples():
+    """Returns a catalogue of curated predefined audio command files available on the server."""
+    return [
+        PredefinedSampleItem(
+            id="forward",
+            filename="forward.wav",
+            command="FORWARD",
+            label="Move Forward",
+            description="Clear spoken command: 'Drone move forward'",
+            url="/static/samples/forward.wav",
+        ),
+        PredefinedSampleItem(
+            id="backward",
+            filename="backward.wav",
+            command="BACKWARD",
+            label="Move Backward",
+            description="Clear spoken command: 'Drone move backward'",
+            url="/static/samples/backward.wav",
+        ),
+        PredefinedSampleItem(
+            id="left",
+            filename="left.wav",
+            command="LEFT",
+            label="Move Left",
+            description="Clear spoken command: 'Drone move left'",
+            url="/static/samples/left.wav",
+        ),
+        PredefinedSampleItem(
+            id="right",
+            filename="right.wav",
+            command="RIGHT",
+            label="Turn Right",
+            description="Clear spoken command: 'Drone turn right'",
+            url="/static/samples/right.wav",
+        ),
+        PredefinedSampleItem(
+            id="stop",
+            filename="stop.wav",
+            command="STOP",
+            label="Stop Drone",
+            description="Clear emergency halt command: 'Drone stop'",
+            url="/static/samples/stop.wav",
+        ),
+        PredefinedSampleItem(
+            id="emergency_stop",
+            filename="emergency_stop.wav",
+            command="EMERGENCY_STOP",
+            label="Emergency Stop",
+            description="Critical safety shutdown command: 'Emergency stop'",
+            url="/static/samples/emergency_stop.wav",
+        ),
+    ]
+
+
+@router.post("/samples/{sample_id}/play", response_model=VoiceEvent)
+async def play_predefined_sample(sample_id: str):
+    """
+    Loads and executes a predefined audio command from the curated sample library.
+    Immediately feeds it into the voice engine, updating the CRS score in real-time.
+    """
+    import os
+    import soundfile as sf
+    import librosa
+
+    clean_id = sample_id.lower().strip()
+    filename = f"{clean_id}.wav"
+    sample_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../static/samples"))
+    file_path = os.path.join(sample_dir, filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Predefined sample '{sample_id}' not found at {file_path}",
+        )
+
+    try:
+        data, sr = sf.read(file_path)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        if sr != 16000:
+            data = librosa.resample(data.astype(np.float32), orig_sr=sr, target_sr=16000)
+            sr = 16000
+        audio_array = data.astype(np.float32)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read sample '{filename}': {str(e)}",
+        )
+
+    event = voice_manager.process_audio_chunk(
+        audio_data=audio_array,
+        sample_rate=sr,
+        operator_id=f"OP-PREDEFINED-{clean_id.upper()}",
     )
     return event
 

@@ -43,8 +43,8 @@ export function useFusionStream() {
       return;
     }
 
-    const host = window.location.hostname || '127.0.0.1';
-    const wsUrl = `ws://${host}:8000/ws/fusion/stream`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/fusion/stream`;
 
     try {
       const ws = new WebSocket(wsUrl);
@@ -106,13 +106,15 @@ export function useFusionStream() {
     fetchFusionConfig().then((cfg) => cfg && setFusionConfig(cfg));
     fetchContextState().then((ctx) => ctx && setContextState(ctx));
 
-    // Periodic poll for status & context refresh
+    // Periodic poll for status, latest CRS evaluation & context refresh
     const interval = window.setInterval(async () => {
       const st = await fetchFusionStatus();
       if (st) setFusionStatus(st);
+      const lat = await fetchLatestFusion();
+      if (lat) setLatestFusion(lat);
       const ctx = await fetchContextState();
       if (ctx) setContextState(ctx);
-    }, 3000);
+    }, 2000);
 
     return () => {
       window.clearInterval(interval);

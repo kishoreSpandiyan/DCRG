@@ -11,7 +11,7 @@ import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 from app.core.config import settings
-from app.modules.voice_engine.schemas import VoiceEvent
+from app.modules.voice_engine.schemas import VoiceEvent, CanonicalCommand
 from app.modules.actuator_engine.schemas import CommonJoystickEvent
 from app.modules.sync_engine.schemas import (
     CorrelatedEvent,
@@ -37,16 +37,16 @@ class EventSynchronizer:
 
     def __init__(
         self,
-        sync_window_ms: float = 150.0,
-        max_event_age_ms: float = 350.0,
-        buffer_capacity: int = 200,
-        duplicate_cache_size: int = 1000,
+        sync_window_ms: Optional[float] = None,
+        max_event_age_ms: Optional[float] = None,
+        buffer_capacity: Optional[int] = None,
+        duplicate_cache_size: Optional[int] = None,
         ts_manager: Optional[TimestampManager] = None,
     ):
-        self.sync_window_ms = sync_window_ms
-        self.max_event_age_ms = max_event_age_ms
-        self.buffer_capacity = buffer_capacity
-        self.duplicate_cache_size = duplicate_cache_size
+        self.sync_window_ms = sync_window_ms if sync_window_ms is not None else settings.SYNC_WINDOW_MS
+        self.max_event_age_ms = max_event_age_ms if max_event_age_ms is not None else settings.SYNC_MAX_EVENT_AGE_MS
+        self.buffer_capacity = buffer_capacity if buffer_capacity is not None else settings.SYNC_BUFFER_CAPACITY
+        self.duplicate_cache_size = duplicate_cache_size if duplicate_cache_size is not None else settings.SYNC_DUPLICATE_CACHE_SIZE
         self.ts_manager = ts_manager or timestamp_manager
 
         self._lock = threading.RLock()
@@ -86,6 +86,22 @@ class EventSynchronizer:
             msg = f"Configured sync_window_ms={self.sync_window_ms}, max_event_age_ms={self.max_event_age_ms}"
             logger.info(msg)
             return True, msg
+
+    def reset(self) -> None:
+        """Clears buffers and resets internal counters (for test and session isolation)."""
+        with self._lock:
+            self._voice_buffer.clear()
+            self._joystick_buffer.clear()
+            self._seen_event_ids.clear()
+            self.last_correlation = None
+            self.total_synchronized = 0
+            self.total_voice_only = 0
+            self.total_joystick_only = 0
+            self.total_out_of_window = 0
+            self.total_delayed = 0
+            self.total_stale = 0
+            self.total_duplicate = 0
+            self.total_invalid_timestamp = 0
 
     def subscribe(self, callback: Callable[[CorrelatedEvent], None]) -> None:
         """Registers a listener for emitted CorrelatedEvents."""
@@ -133,10 +149,30 @@ class EventSynchronizer:
                     best_delta = delta
                     best_idx = idx
 
+            # 4b. If no strict match, check for active joystick deflection in buffer (within max_event_age_ms)
+            if best_idx is None:
+                for idx in range(len(self._joystick_buffer) - 1, -1, -1):
+                    j_time, j_event, j_meta = self._joystick_buffer[idx]
+                    if j_event.intensity >= 0.10:
+                        delta = abs(event.timestamp - j_time)
+                        if delta <= self.max_event_age_ms:
+                            best_idx = idx
+                            best_delta = delta
+                            break
+
             if best_idx is not None:
                 # Match found! Remove matched joystick event from buffer
                 _, matched_joy, joy_meta = self._joystick_buffer.pop(best_idx)
-                status = SynchronizationStatus.DELAYED if (meta.is_delayed or joy_meta.is_delayed) else SynchronizationStatus.SYNCHRONIZED
+                is_active_multimodal = (matched_joy.intensity >= 0.10 or event.recognized_command.value == "STOP")
+                status = (
+                    SynchronizationStatus.DELAYED
+                    if (meta.is_delayed or joy_meta.is_delayed)
+                    else (
+                        SynchronizationStatus.SYNCHRONIZED
+                        if (best_delta <= self.sync_window_ms or (is_active_multimodal and best_delta <= self.max_event_age_ms))
+                        else SynchronizationStatus.OUT_OF_WINDOW
+                    )
+                )
                 self.total_synchronized += 1
 
                 corr = CorrelatedEvent(
@@ -157,15 +193,7 @@ class EventSynchronizer:
                 self._dispatch(corr)
                 return corr
 
-            # 5. Check if there is an existing joystick event that is explicitly OUT OF WINDOW
-            # If the closest joystick event exceeds the window but was recent
-            closest_j_delta = float("inf")
-            for j_time, _, _ in self._joystick_buffer:
-                d = abs(event.timestamp - j_time)
-                if d < closest_j_delta:
-                    closest_j_delta = d
-
-            # 6. If no match yet, buffer the voice event
+            # 5. If no active joystick match, buffer voice event awaiting partner
             self._voice_buffer.append((event.timestamp, event, meta))
             self._enforce_buffer_capacity(self._voice_buffer)
             return None
@@ -210,10 +238,29 @@ class EventSynchronizer:
                     best_delta = delta
                     best_idx = idx
 
+            # 4b. If no strict match and stick is actively deflected, check unpartnered voice in buffer
+            if best_idx is None and event.intensity >= 0.10:
+                for idx in range(len(self._voice_buffer) - 1, -1, -1):
+                    v_time, v_event, v_meta = self._voice_buffer[idx]
+                    delta = abs(event.timestamp - v_time)
+                    if delta <= self.max_event_age_ms:
+                        best_idx = idx
+                        best_delta = delta
+                        break
+
             if best_idx is not None:
                 # Match found! Remove matched voice event from buffer
                 _, matched_voice, voice_meta = self._voice_buffer.pop(best_idx)
-                status = SynchronizationStatus.DELAYED if (meta.is_delayed or voice_meta.is_delayed) else SynchronizationStatus.SYNCHRONIZED
+                is_active_multimodal = (event.intensity >= 0.10 or matched_voice.recognized_command.value == "STOP")
+                status = (
+                    SynchronizationStatus.DELAYED
+                    if (meta.is_delayed or voice_meta.is_delayed)
+                    else (
+                        SynchronizationStatus.SYNCHRONIZED
+                        if (best_delta <= self.sync_window_ms or (is_active_multimodal and best_delta <= self.max_event_age_ms))
+                        else SynchronizationStatus.OUT_OF_WINDOW
+                    )
+                )
                 self.total_synchronized += 1
 
                 corr = CorrelatedEvent(

@@ -9,6 +9,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { useSyncStream } from '../hooks/useSyncStream';
+import { useFusionStream } from '../hooks/useFusionStream';
 import type { SynchronizationStatus } from '../types';
 
 export const SynchronizationDashboardPanel: React.FC = () => {
@@ -19,6 +20,7 @@ export const SynchronizationDashboardPanel: React.FC = () => {
     isWsConnected,
     updateSyncWindow,
   } = useSyncStream();
+  const { latestFusion } = useFusionStream();
 
   const [sliderWindow, setSliderWindow] = useState<number>(syncStatus?.sync_window_ms || 150);
 
@@ -242,10 +244,27 @@ export const SynchronizationDashboardPanel: React.FC = () => {
             </div>
           </div>
 
-          <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300">
-            <span className="text-slate-500">Correlation Reason:</span>
-            <div className="mt-0.5 font-semibold text-slate-200">
-              {latestCorrelation?.correlation_reason || 'Awaiting multi-modal events...'}
+          <div className="space-y-2">
+            <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-between text-xs font-mono">
+              <span className="text-slate-400">Resulting CRS:</span>
+              <span
+                className={`font-bold px-2 py-0.5 rounded border ${
+                  latestFusion && latestFusion.CRS >= 85
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+                    : latestFusion && latestFusion.CRS >= 50
+                    ? 'bg-amber-950 text-amber-300 border-amber-700'
+                    : 'bg-rose-950 text-rose-300 border-rose-700'
+                }`}
+              >
+                {latestFusion ? `${latestFusion.CRS.toFixed(1)} / 100 (${latestFusion.recommended_state || 'IDLE'})` : 'AWAITING'}
+              </span>
+            </div>
+
+            <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 text-left">
+              <span className="text-slate-500">Correlation Reason:</span>
+              <div className="mt-0.5 font-semibold text-slate-200">
+                {latestCorrelation?.correlation_reason || 'Awaiting multi-modal events...'}
+              </div>
             </div>
           </div>
         </div>

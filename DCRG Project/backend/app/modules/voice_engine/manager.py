@@ -9,7 +9,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from app.core.config import settings
@@ -34,6 +34,13 @@ from app.modules.prosody_engine.analyzer import (
     ProsodyAnalyzer,
     prosody_analyzer,
 )
+from app.modules.voice_engine.kws_service import (
+    KeywordSpotterService,
+    KeywordDetectionResult,
+    keyword_spotter,
+    DroneKeyword,
+    EMERGENCY_KEYWORDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +49,7 @@ class VoiceManager:
     """
     Central controller for DCRG Phase 3 Voice Subsystem.
     Enforces independent execution, truthful status reporting,
-    and publishes structured VoiceEvents.
+    and publishes structured VoiceEvents with ultra-low-latency KWS.
     """
 
     def __init__(
@@ -51,6 +58,7 @@ class VoiceManager:
         stt_service: Optional[WhisperService] = None,
         prosody_eng: Optional[ProsodyAnalyzer] = None,
         semantic_clf: Optional[Any] = None,
+        kws_eng: Optional[KeywordSpotterService] = None,
     ):
         self.mic_service = mic_service or microphone_service
         self.whisper_service = stt_service or whisper_service
@@ -61,6 +69,11 @@ class VoiceManager:
             from app.modules.semantic_engine.classifier import semantic_classifier
             self.semantic_classifier = semantic_classifier
 
+        self.kws_service = kws_eng or keyword_spotter
+        # Register KWS hooks for immediate safety gate hold and early UI dispatch
+        self.kws_service.register_emergency_handler(self._on_kws_emergency)
+        self.kws_service.register_listener(self._on_kws_detection)
+
         self._lock = threading.RLock()
         self._subscribers: List[Callable[[VoiceEvent], None]] = []
 
@@ -68,21 +81,101 @@ class VoiceManager:
         self.last_event: Optional[VoiceEvent] = None
         self.last_event_time: float = 0.0
 
+        # Adaptive Noise Floor Tracking
+        self._ambient_rms: float = 0.005
+        self._adaptive_alpha: float = 0.03
+        self._last_vad_onset_ms: float = 0.0
+        self._last_vad_endpoint_ms: float = 0.0
+
         # Background worker for async speech chunk processing
         self._audio_queue: queue.Queue = queue.Queue(maxsize=50)
         self._worker_thread: Optional[threading.Thread] = None
         self._is_running = False
 
-        # Speech segmentation state
+        # Speech segmentation state (ultra-low latency tuning)
         self._speech_buffer: List[np.ndarray] = []
         self._is_speaking = False
         self._silence_frames = 0
-        self._silence_hangover_frames = int(0.35 / 0.03)  # ~350ms silence hangover
-        self._min_speech_frames = int(0.20 / 0.03)       # ~200ms minimum speech
-        self._max_speech_frames = int(3.50 / 0.03)       # ~3.5s maximum utterance
+        self._silence_hangover_frames = int(0.15 / 0.03)  # ~150ms silence hangover (lowered from 350ms)
+        self._min_speech_frames = int(0.12 / 0.03)       # ~120ms minimum speech
+        self._max_speech_frames = int(1.20 / 0.03)       # ~1.2s max utterance for instant command turnaround
 
         # Hook into microphone service chunks
         self.mic_service.register_chunk_subscriber(self._on_audio_chunk)
+
+    def _on_kws_emergency(self, kws_res: KeywordDetectionResult) -> None:
+        """
+        Fast-Path Safety Gate Hook.
+        Directly engages emergency stop on Safety Engine within <60ms upon detecting
+        emergency keywords (STOP, EMERGENCY STOP) with high confidence (>= 0.85).
+        """
+        if kws_res.keyword not in ("STOP", "EMERGENCY STOP") or kws_res.confidence < 0.85:
+            return
+        try:
+            from app.modules.safety_engine.manager import safety_manager
+            from app.modules.safety_engine.schemas import EmergencySource
+            safety_manager.trigger_emergency_hold(
+                keyword=kws_res.keyword,
+                confidence=kws_res.confidence,
+                source=EmergencySource.KEYWORD_SPOTTER,
+                detection_latency_ms=kws_res.detection_latency_ms,
+            )
+            logger.warning(
+                f"[KWS-SAFETY-GATE] Emergency Hold engaged for '{kws_res.keyword}' in {kws_res.detection_latency_ms:.2f}ms"
+            )
+        except Exception as e:
+            logger.error(f"Error triggering safety gate from KWS: {e}")
+
+    def _on_kws_detection(self, kws_res: KeywordDetectionResult) -> None:
+        """
+        Fast Keyword Detection Broadcast.
+        Immediately dispatches high-priority VoiceEvent to WebSocket listeners
+        so the UI reflects the recognized command in <60ms without waiting for STT!
+        """
+        ts = kws_res.timestamp_ms
+        cmd_str = kws_res.keyword.upper()
+        cmd_enum = CanonicalCommand.UNCERTAIN
+        for c in CanonicalCommand:
+            if c.value == cmd_str or (cmd_str == "EMERGENCY STOP" and c == CanonicalCommand.STOP):
+                cmd_enum = c
+                break
+
+        vec = CANONICAL_DIRECTION_VECTORS.get(cmd_enum, {"x": 0.0, "y": 0.0})
+
+        early_event = VoiceEvent(
+            timestamp=ts,
+            timestamp_event_ms=ts,
+            timestamp_proc_ms=ts + kws_res.detection_latency_ms,
+            source="kws_fast_path",
+            operator_id="OP-FAST-KWS",
+            transcript=kws_res.keyword,
+            normalized_transcript=kws_res.keyword.lower(),
+            recognized_command=cmd_enum,
+            classified_command=cmd_enum.value,
+            recognition_confidence=round(kws_res.confidence, 4),
+            classification_confidence=round(kws_res.confidence, 4),
+            confidence=round(kws_res.confidence, 4),
+            semantic_status=SemanticStatus.RECOGNIZED,
+            is_uncertain=False,
+            direction_vector=vec,
+            audio_duration_ms=kws_res.audio_duration_ms,
+            pitch_f0=160.0,
+            pitch_f0_std=10.0,
+            jitter=0.01,
+            shimmer=0.02,
+            speech_rate=4.0,
+            intensity=0.5,
+            audio_quality=AudioQuality.GOOD,
+            model_version="kws-acoustic-fast",
+            composite_stress_score=0.2,
+            stress_score=0.2,
+            is_stressed=False,
+        )
+        with self._lock:
+            self.last_event = early_event
+            self.last_event_time = ts
+
+        self._dispatch_event(early_event)
 
     def start(self) -> Tuple[bool, str]:
         """Starts the voice processing engine and background inference worker."""
@@ -167,6 +260,10 @@ class VoiceManager:
                 sample_rate=self.mic_service.sample_rate,
                 last_event=self.last_event,
                 error_message=self.mic_service.hardware_error,
+                kws_active=True,
+                kws_total_detections=self.kws_service.total_detections,
+                kws_emergency_triggers=self.kws_service.total_emergency_triggers,
+                ambient_noise_rms=round(self._ambient_rms, 5),
             )
 
     def process_audio_chunk(
@@ -222,13 +319,14 @@ class VoiceManager:
             timestamp=ts,
         )
 
-        proc_ms = (time.time() - t_proc_start) * 1000.0
+        now_ready_ms = time.time() * 1000.0
+        proc_ms = now_ready_ms - (t_proc_start * 1000.0)
 
         # 4. Assemble Standardized VoiceEvent Contract
         event = VoiceEvent(
-            timestamp=ts,
+            timestamp=now_ready_ms,
             timestamp_event_ms=ts,
-            timestamp_proc_ms=ts + proc_ms,
+            timestamp_proc_ms=now_ready_ms,
             source="voice",
             operator_id=operator_id,
             transcript=semantic_result.original_transcript,
@@ -268,22 +366,40 @@ class VoiceManager:
     def _on_audio_chunk(self, chunk: np.ndarray, sample_rate: int) -> None:
         """
         Receives real-time streaming audio frames from microphone.
-        Performs lightweight energy-based VAD framing and speech hangover buffering.
+        1. Continuous Ultra-Low-Latency Keyword Spotting (<3ms).
+        2. Dynamic Noise Floor Tracking & Energy VAD.
+        3. Segments speech with short ~150ms hangover.
         """
         if not self._is_running or self.mic_service.is_muted:
             return
 
+        # 1. Continuous Ultra-Low-Latency Keyword Spotting
+        try:
+            self.kws_service.process_chunk(chunk, sample_rate)
+        except Exception as e:
+            logger.debug(f"KWS chunk processing exception: {e}")
+
+        # 2. Dynamic Noise Floor Tracking & Energy VAD
         rms = float(np.sqrt(np.mean(np.square(chunk))))
         peak = float(np.max(np.abs(chunk))) if len(chunk) > 0 else 0.0
-        # Trigger on RMS or instantaneous peak above noise floor for high Type-C sensitivity
-        is_speech_frame = (rms > settings.VOICE_SILENCE_ENERGY_THRESHOLD) or (peak > settings.VOICE_SILENCE_ENERGY_THRESHOLD * 2.0)
+
+        if not self._is_speaking and rms < 0.02:
+            self._ambient_rms = (1.0 - self._adaptive_alpha) * self._ambient_rms + self._adaptive_alpha * rms
+
+        speech_threshold = max(0.008, self._ambient_rms * 2.2, settings.VOICE_SILENCE_ENERGY_THRESHOLD * 2.0)
+        silence_threshold = max(0.004, self._ambient_rms * 1.3, settings.VOICE_SILENCE_ENERGY_THRESHOLD)
+
+        is_speech_frame = (rms > speech_threshold) or (peak > speech_threshold * 2.0)
+        now_ms = time.time() * 1000.0
 
         if is_speech_frame:
+            if not self._is_speaking:
+                self._last_vad_onset_ms = now_ms
             self._is_speaking = True
             self._silence_frames = 0
             self._speech_buffer.append(chunk)
 
-            # Cap max utterance duration to avoid runaway buffers
+            # Cap max utterance duration to avoid runaway buffers (1.2s max)
             if len(self._speech_buffer) >= self._max_speech_frames:
                 self._finalize_speech_segment(sample_rate)
         elif self._is_speaking:
@@ -291,8 +407,9 @@ class VoiceManager:
             self._silence_frames += 1
             self._speech_buffer.append(chunk)
 
-            # Check if silence hangover exceeded
+            # Check if silence hangover exceeded (~150ms)
             if self._silence_frames >= self._silence_hangover_frames:
+                self._last_vad_endpoint_ms = now_ms
                 self._finalize_speech_segment(sample_rate)
 
     def _finalize_speech_segment(self, sample_rate: int) -> None:

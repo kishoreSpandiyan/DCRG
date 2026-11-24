@@ -22,8 +22,8 @@ export function useVoiceStream() {
       return;
     }
 
-    const host = window.location.hostname || '127.0.0.1';
-    const wsUrl = `ws://${host}:8000/ws/voice/stream`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/voice/stream`;
 
     try {
       const ws = new WebSocket(wsUrl);

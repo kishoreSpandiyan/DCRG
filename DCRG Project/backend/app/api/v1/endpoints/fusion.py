@@ -54,6 +54,7 @@ async def get_current_crs():
     if not latest:
         return {
             "CRS": None,
+            "crs_score": None,
             "CRS_status": "NO_EVALUATION",
             "contradiction_detected": False,
             "analytical_finding": "INSUFFICIENT_EVIDENCE",
@@ -62,6 +63,7 @@ async def get_current_crs():
     return {
         "fusion_id": latest.fusion_id,
         "CRS": latest.CRS,
+        "crs_score": latest.CRS,
         "CRS_status": latest.CRS_status,
         "contradiction_detected": latest.contradiction_detected,
         "analytical_finding": latest.analytical_finding,

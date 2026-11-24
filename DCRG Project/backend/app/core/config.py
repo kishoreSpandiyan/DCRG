@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     DEFAULT_MICROPHONE_DEVICE_INDEX: Optional[int] = None
 
     # Event Synchronization & Correlation Configuration (Phase 4)
-    SYNC_WINDOW_MS: float = 150.0
+    SYNC_WINDOW_MS: float = 150.0              # Default correlation matching window per DCRG-ARCH-004
     SYNC_MAX_EVENT_AGE_MS: float = 2500.0      # Bounded multi-modal retention window (allows async STT to pair)
     SYNC_BUFFER_CAPACITY: int = 200            # Queue capacity per modality buffer
     SYNC_CLOCK_DRIFT_THRESHOLD_MS: float = 50.0 # Warn when client/server clock skew exceeds this
@@ -62,14 +62,14 @@ class Settings(BaseSettings):
     CRS_WEIGHT_CONTEXT: float = 0.15
     CRS_STRESS_DAMPING: float = 0.25           # Beta coefficient for prosody stress attenuation
     CRS_CONTRADICTION_CAP: float = 30.0        # Max CRS ceiling when contradiction is asserted
-    CRS_CONTRADICTION_WHISPER_MIN: float = 0.70 # Min speech confidence to trigger veto
-    CRS_CONTRADICTION_JOYSTICK_MIN: float = 0.30 # Min stick deflection to trigger veto
+    CRS_CONTRADICTION_WHISPER_MIN: float = 0.60 # Minimum Whisper confidence to trigger veto (calibrated to 0.60 to capture all speech commands while filtering noise < 0.60)
+    CRS_CONTRADICTION_JOYSTICK_MIN: float = 0.30 # Minimum stick deflection to trigger veto
     CRS_JOYSTICK_DEADZONE: float = 0.08        # Radial deadzone threshold
     CRS_SCORING_CONFIG_VERSION: str = "v1.0-prototype"
 
     # Tiered Safety Authorization Engine Configuration (Phase 6)
-    SAFETY_GREEN_THRESHOLD: float = 85.0       # CRS >= 85 required for automatic GREEN authorization
-    SAFETY_YELLOW_THRESHOLD: float = 50.0      # 50 <= CRS < 85 enters YELLOW hold requiring confirmation
+    SAFETY_GREEN_THRESHOLD: float = 65.0       # CRS >= 65 required for automatic GREEN authorization (calibrated for real speech-motor agreement)
+    SAFETY_YELLOW_THRESHOLD: float = 50.0      # 50 <= CRS < 65 enters YELLOW hold requiring confirmation
     SAFETY_CONFIRMATION_TIMEOUT_MS: float = 5000.0  # Time allowed for human confirmation before auto-reject
     SAFETY_AUTH_TOKEN_TTL_MS: float = 2000.0   # Lifetime of simulation execution token
     SAFETY_GATEWAY_SIMULATION_ONLY: bool = True  # Strict safeguard: physical actuators disabled

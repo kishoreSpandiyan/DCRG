@@ -98,15 +98,18 @@ class ProsodyAnalyzer:
         if clipping_ratio > 0.05:
             quality = AudioQuality.DEGRADED
         else:
-            # Check SNR / noise estimate via spectral flatness
+            # Check SNR / noise estimate via fast NumPy spectral flatness
             try:
-                flatness = float(np.mean(librosa.feature.spectral_flatness(y=audio)))
+                fft_mag = np.abs(np.fft.rfft(audio)) + 1e-12
+                geom_mean = np.exp(np.mean(np.log(fft_mag)))
+                arith_mean = np.mean(fft_mag)
+                flatness = float(geom_mean / arith_mean)
                 if flatness > 0.40:
                     quality = AudioQuality.NOISY
             except Exception:
                 pass
 
-        # 5. Fundamental Frequency (F0 / Pitch) Extraction via YIN
+        # 5. Fundamental Frequency (F0 / Pitch) Extraction via High-Speed Normalized Autocorrelation
         # Target typical speech range: 65 Hz - 400 Hz
         f0_mean = 0.0
         f0_std = 0.0
@@ -115,47 +118,45 @@ class ProsodyAnalyzer:
         voiced_frames_count = 0
 
         try:
-            # frame_length = 2048, hop_length = 512
-            frame_len = min(2048, len(audio))
-            hop_len = max(128, frame_len // 4)
-            
-            f0_track = librosa.yin(
-                audio,
-                fmin=65,
-                fmax=400,
-                sr=sr,
-                frame_length=frame_len,
-                hop_length=hop_len,
-            )
-            # Replace NaNs / invalid values
-            f0_track = np.nan_to_num(f0_track, nan=0.0)
-            voiced = f0_track[(f0_track >= 65.0) & (f0_track <= 400.0)]
-            voiced_frames_count = len(voiced)
+            frame_len = min(1024, len(audio))
+            hop_len = max(256, frame_len // 2)
+            f0_track = []
+            voiced_energies = []
 
-            if voiced_frames_count >= 2:
-                f0_mean = float(np.mean(voiced))
-                f0_std = float(np.std(voiced))
+            for i in range(0, len(audio) - frame_len + 1, hop_len):
+                frame = audio[i : i + frame_len]
+                energy = float(np.sqrt(np.mean(frame**2)))
+                ac = np.correlate(frame, frame, mode='full')[frame_len - 1:]
+                min_lag = int(sr / 400.0)
+                max_lag = int(sr / 65.0)
+
+                if max_lag < len(ac) and ac[0] > 1e-8:
+                    peak_lag = np.argmax(ac[min_lag:max_lag]) + min_lag
+                    # Voicing peak threshold
+                    if ac[peak_lag] > 0.35 * ac[0]:
+                        f0 = sr / float(peak_lag)
+                        if 65.0 <= f0 <= 400.0:
+                            f0_track.append(f0)
+                            voiced_energies.append(energy)
+
+            voiced_frames_count = len(f0_track)
+            if voiced_frames_count >= 1:
+                f0_mean = float(np.mean(f0_track))
+                f0_std = float(np.std(f0_track))
 
                 # 6. Jitter Calculation (Local Period Perturbation)
-                # Period T_i = 1 / F0_i
-                periods = 1.0 / voiced
-                period_diffs = np.abs(np.diff(periods))
-                mean_period = np.mean(periods)
-                if mean_period > 0 and len(period_diffs) > 0:
-                    jitter = float(np.mean(period_diffs) / mean_period)
-                    jitter = min(1.0, max(0.0, jitter))
+                if voiced_frames_count >= 2:
+                    periods = 1.0 / np.array(f0_track)
+                    period_diffs = np.abs(np.diff(periods))
+                    mean_period = float(np.mean(periods))
+                    if mean_period > 0 and len(period_diffs) > 0:
+                        jitter = float(np.mean(period_diffs) / mean_period)
+                        jitter = min(1.0, max(0.0, jitter))
 
                 # 7. Shimmer Calculation (Local Frame Amplitude Perturbation)
-                # Compute RMS frame energies aligned with voiced segments
-                frame_energies = librosa.feature.rms(y=audio, frame_length=frame_len, hop_length=hop_len)[0]
-                if len(frame_energies) >= len(f0_track):
-                    frame_energies = frame_energies[:len(f0_track)]
-                # Filter to voiced frames
-                voiced_mask = (f0_track >= 65.0) & (f0_track <= 400.0)
-                voiced_energies = frame_energies[voiced_mask[:len(frame_energies)]]
                 if len(voiced_energies) >= 2:
                     amp_diffs = np.abs(np.diff(voiced_energies))
-                    mean_amp = np.mean(voiced_energies)
+                    mean_amp = float(np.mean(voiced_energies))
                     if mean_amp > 1e-6:
                         shimmer = float(np.mean(amp_diffs) / mean_amp)
                         shimmer = min(1.0, max(0.0, shimmer))
@@ -163,14 +164,20 @@ class ProsodyAnalyzer:
         except Exception as e:
             logger.debug(f"Prosody pitch tracking note: {e}")
 
-        # 8. Speech Rate Estimation (Syllables / Second)
+        # 8. Speech Rate Estimation (Syllables / Second) via Fast NumPy Energy Onsets
         speech_rate = 0.0
         try:
-            onsets = librosa.onset.onset_detect(y=audio, sr=sr, backtrack=False)
-            if duration_sec > 0:
-                speech_rate = float(len(onsets) / duration_sec)
-                # Normal speech is between 1.0 and 8.0 syllables/sec
-                speech_rate = min(15.0, max(0.0, speech_rate))
+            frame_hop = int(0.02 * sr)  # 20ms frames
+            if len(audio) >= frame_hop * 2:
+                num_frames = len(audio) // frame_hop
+                hops = audio[: num_frames * frame_hop].reshape(num_frames, frame_hop)
+                rms_frames = np.sqrt(np.mean(hops**2, axis=1))
+                diffs = np.diff(rms_frames)
+                # Syllabic onset threshold above background noise
+                onsets = np.where(diffs > 0.015)[0]
+                if duration_sec > 0:
+                    speech_rate = float(len(onsets) / duration_sec)
+                    speech_rate = min(15.0, max(0.0, speech_rate))
         except Exception as e:
             logger.debug(f"Prosody speech rate detection note: {e}")
 

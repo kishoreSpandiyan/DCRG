@@ -97,6 +97,12 @@ class SyncManager:
         with self._lock:
             return list(reversed(self._history[-limit:]))
 
+    def reset_stats(self) -> None:
+        """Clears correlated history and resets underlying synchronizer buffers and counters."""
+        with self._lock:
+            self._history.clear()
+            self.synchronizer.reset()
+
     def correlate_manual_pair(
         self,
         voice_event: Optional[VoiceEvent],

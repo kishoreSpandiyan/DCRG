@@ -92,28 +92,22 @@ class ActuatorManager:
         with self._lock:
             devices = self.physical_service.get_connected_devices()
             has_hw = len(devices) > 0
-            primary_name = (
-                devices[0]["name"] if has_hw else 
-                ("Physical Hardware Subsystem" if self.active_mode == JoystickMode.REAL_HARDWARE else None)
-            )
-            primary_id = (
-                devices[0]["device_id"] if has_hw else 
-                ("USB-HARDWARE-0" if self.active_mode == JoystickMode.REAL_HARDWARE else None)
-            )
+            primary_name = devices[0]["name"] if has_hw else None
+            primary_id = devices[0]["device_id"] if has_hw else None
 
-            conn_status = ConnectionStatus.CONNECTED if (
-                (self.active_mode == JoystickMode.REAL_HARDWARE) or
-                (self.active_mode == JoystickMode.VIRTUAL_SIMULATION)
-            ) else ConnectionStatus.DISCONNECTED
+            if self.active_mode == JoystickMode.REAL_HARDWARE:
+                conn_status = ConnectionStatus.CONNECTED if has_hw else ConnectionStatus.DISCONNECTED
+            else:
+                conn_status = ConnectionStatus.CONNECTED
 
             return JoystickSystemStatus(
                 active_mode=self.active_mode,
-                physical_hardware_detected=has_hw or (self.active_mode == JoystickMode.REAL_HARDWARE),
-                connected_device_count=max(len(devices), 1 if self.active_mode == JoystickMode.REAL_HARDWARE else 0),
+                physical_hardware_detected=has_hw,
+                connected_device_count=len(devices),
                 primary_device_name=primary_name,
                 primary_device_id=primary_id,
                 connection_status=conn_status,
-                calibration_status=CalibrationStatus.CALIBRATED if (has_hw or self.active_mode == JoystickMode.REAL_HARDWARE) else CalibrationStatus.DEFAULT,
+                calibration_status=CalibrationStatus.CALIBRATED if has_hw else CalibrationStatus.DEFAULT,
                 last_event=self.last_event,
                 error_message=self.physical_service.hardware_error,
             )
@@ -121,9 +115,13 @@ class ActuatorManager:
     def _on_physical_joystick_event(self, event: CommonJoystickEvent) -> None:
         """Internal handler for incoming physical joystick samples."""
         with self._lock:
-            # Block physical events if in VIRTUAL_SIMULATION mode
+            # If in VIRTUAL_SIMULATION mode, auto-engage REAL_HARDWARE upon active physical deflection
             if self.active_mode != JoystickMode.REAL_HARDWARE:
-                return
+                if event.intensity >= 0.15:
+                    self.active_mode = JoystickMode.REAL_HARDWARE
+                    logger.info("Auto-engaged REAL_HARDWARE mode upon physical joystick deflection.")
+                else:
+                    return
 
             self.last_event = event
             self.last_event_time = event.timestamp

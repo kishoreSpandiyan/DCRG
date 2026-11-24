@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class SystemConfigModel(BaseModel):
     """Authoritative DCRG system parameter schema with strict range invariants."""
-    sync_window_ms: float = Field(150.0, ge=50.0, le=500.0, description="Temporal correlation matching window (ms)")
+    sync_window_ms: float = Field(150.0, ge=50.0, le=1000.0, description="Temporal correlation matching window (ms)")
     joystick_deadzone: float = Field(0.08, ge=0.01, le=0.40, description="Radial deadzone threshold")
     voice_confidence_threshold: float = Field(0.60, ge=0.10, le=1.00, description="Whisper confidence threshold")
     crs_weight_semantic: float = Field(0.35, ge=0.0, le=1.0, description="CRS semantic weight Ws")

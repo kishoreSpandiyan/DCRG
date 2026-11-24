@@ -92,3 +92,48 @@ def test_voice_websocket_connection(client: TestClient):
         assert pong_frame["type"] == "PONG"
         assert pong_frame["timestamp"] == 12345
 
+
+def test_list_predefined_samples(client: TestClient):
+    """Verifies GET /api/v1/voice/samples returns curated list of audio commands."""
+    response = client.get("/api/v1/voice/samples")
+    assert response.status_code == 200
+    samples = response.json()
+    assert len(samples) >= 6
+    ids = [s["id"] for s in samples]
+    assert "forward" in ids
+    assert "backward" in ids
+    assert "left" in ids
+    assert "right" in ids
+    assert "stop" in ids
+
+
+def test_play_predefined_sample_forward(client: TestClient):
+    """Verifies POST /api/v1/voice/samples/forward/play executes the sample into the engine."""
+    response = client.post("/api/v1/voice/samples/forward/play")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recognized_command"] == "FORWARD"
+    assert data["recognition_confidence"] > 0.50
+
+
+def test_upload_base64_audio_sample(client: TestClient):
+    """Verifies POST /api/v1/voice/upload accepts base64 audio and returns VoiceEvent."""
+    import base64
+    import os
+    sample_path = os.path.join(os.path.dirname(__file__), "../app/static/samples/left.wav")
+    assert os.path.exists(sample_path)
+    with open(sample_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    response = client.post(
+        "/api/v1/voice/upload",
+        json={
+            "filename": "left.wav",
+            "audio_base64": b64,
+            "operator_id": "TEST-UPLOAD",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recognized_command"] == "LEFT"
+

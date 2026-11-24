@@ -34,8 +34,8 @@ export function useSimulationStream() {
       return;
     }
 
-    const host = window.location.hostname || '127.0.0.1';
-    const wsUrl = `ws://${host}:8000/ws/simulation/stream`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/simulation/stream`;
 
     try {
       const ws = new WebSocket(wsUrl);
@@ -149,6 +149,19 @@ export function useSimulationStream() {
     }
   }, []);
 
+  const sendCommand = useCallback(async (cmd: 'FORWARD' | 'BACKWARD' | 'LEFT' | 'RIGHT' | 'STOP') => {
+    try {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'COMMAND', command: cmd }));
+      } else {
+        const updated = await controlSimulation(cmd);
+        setSimulationState(updated);
+      }
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }, []);
+
   return {
     simulationState,
     executionLogs,
@@ -158,6 +171,7 @@ export function useSimulationStream() {
     resume,
     resetPose,
     setSpeedMultiplier,
+    sendCommand,
     refreshState,
   };
 }

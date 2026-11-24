@@ -72,7 +72,7 @@ export interface VoiceEvent {
   timestamp: number;
   timestamp_event_ms?: number;
   timestamp_proc_ms?: number;
-  source: 'voice';
+  source: 'voice' | 'kws_fast_path';
   operator_id?: string;
   transcript: string;
   normalized_transcript: string;
@@ -110,6 +110,10 @@ export interface VoiceSystemStatus {
   sample_rate: number;
   last_event?: VoiceEvent | null;
   error_message?: string | null;
+  kws_active?: boolean;
+  kws_total_detections?: number;
+  kws_emergency_triggers?: number;
+  ambient_noise_rms?: number;
 }
 
 export interface AudioDevice {
